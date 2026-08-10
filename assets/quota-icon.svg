@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Codex quota monitor">
+  <rect width="128" height="128" rx="28" fill="#10A37F"/>
+  <path d="M27 86V70h14v16H27zm30 0V50h14v36H57zm30 0V30h14v56H87z" fill="#fff"/>
+  <path d="M24 99h80" stroke="#fff" stroke-width="8" stroke-linecap="round"/>
+</svg>

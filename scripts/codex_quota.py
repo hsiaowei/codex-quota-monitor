@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""Read live Codex quota windows through the local Codex app-server."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import selectors
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import date, datetime, time as datetime_time, timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
+from typing import Any, Iterable
+
+
+CLIENT_VERSION = "0.1.0"
+DEFAULT_TIMEOUT_SECONDS = 20.0
+
+
+class QuotaError(RuntimeError):
+    """A user-facing quota retrieval error."""
+
+
+@dataclass(frozen=True)
+class Window:
+    limit_id: str
+    limit_name: str | None
+    kind: str
+    used_percent: float
+    duration_minutes: int
+    resets_at: int
+
+    @property
+    def remaining_percent(self) -> float:
+        return max(0.0, min(100.0, 100.0 - self.used_percent))
+
+
+def _send(proc: subprocess.Popen[str], payload: dict[str, Any]) -> None:
+    if proc.stdin is None:
+        raise QuotaError("Codex app-server 标准输入不可用。")
+    proc.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    proc.stdin.flush()
+
+
+def _read_responses(
+    proc: subprocess.Popen[str], wanted_ids: set[int], deadline: float
+) -> dict[int, dict[str, Any]]:
+    if proc.stdout is None:
+        raise QuotaError("Codex app-server 标准输出不可用。")
+
+    selector = selectors.DefaultSelector()
+    selector.register(proc.stdout, selectors.EVENT_READ)
+    responses: dict[int, dict[str, Any]] = {}
+    try:
+        while wanted_ids - responses.keys():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                missing = ", ".join(str(item) for item in sorted(wanted_ids - responses.keys()))
+                raise QuotaError(f"等待 Codex 额度接口超时（缺少响应 {missing}）。")
+            events = selector.select(remaining)
+            if not events:
+                continue
+            line = proc.stdout.readline()
+            if not line:
+                code = proc.poll()
+                raise QuotaError(f"Codex app-server 意外退出（退出码 {code}）。")
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            response_id = message.get("id")
+            if response_id in wanted_ids:
+                responses[response_id] = message
+    finally:
+        selector.close()
+    return responses
+
+
+def _result(response: dict[str, Any], label: str) -> dict[str, Any]:
+    if "error" in response:
+        error = response["error"]
+        message = error.get("message") if isinstance(error, dict) else str(error)
+        raise QuotaError(f"{label}失败：{message}")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise QuotaError(f"{label}返回了无法识别的数据。")
+    return result
+
+
+def fetch_live_data(timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]:
+    codex = shutil.which("codex")
+    if not codex:
+        for candidate in ("/usr/local/bin/codex", "/opt/homebrew/bin/codex"):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                codex = candidate
+                break
+    if not codex:
+        raise QuotaError("找不到 codex 命令，请先安装或更新 Codex CLI。")
+
+    proc = subprocess.Popen(
+        [codex, "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        env=os.environ.copy(),
+    )
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        _send(
+            proc,
+            {
+                "method": "initialize",
+                "id": 0,
+                "params": {
+                    "clientInfo": {
+                        "name": "codex_quota_monitor",
+                        "title": "Codex Quota Monitor",
+                        "version": CLIENT_VERSION,
+                    }
+                },
+            },
+        )
+        initialized = _read_responses(proc, {0}, deadline)
+        _result(initialized[0], "初始化 Codex app-server")
+        _send(proc, {"method": "initialized", "params": {}})
+        _send(
+            proc,
+            {
+                "method": "account/read",
+                "id": 1,
+                "params": {"refreshToken": False},
+            },
+        )
+        _send(proc, {"method": "account/rateLimits/read", "id": 2})
+        _send(proc, {"method": "account/usage/read", "id": 3})
+        responses = _read_responses(proc, {1, 2, 3}, deadline)
+        usage_response = responses[3]
+        usage_result = usage_response.get("result")
+        return {
+            "account": _result(responses[1], "读取 Codex 账号"),
+            "limits": _result(responses[2], "读取 Codex 额度"),
+            "usage": usage_result if isinstance(usage_result, dict) else None,
+            "usageError": usage_response.get("error") if usage_result is None else None,
+            "fetchedAt": int(time.time()),
+        }
+    except BrokenPipeError as exc:
+        raise QuotaError("无法与 Codex app-server 通信。") from exc
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def extract_windows(limits_result: dict[str, Any]) -> list[Window]:
+    by_id = limits_result.get("rateLimitsByLimitId")
+    if isinstance(by_id, dict) and by_id:
+        buckets: Iterable[tuple[str, Any]] = by_id.items()
+    else:
+        single = limits_result.get("rateLimits")
+        limit_id = single.get("limitId", "codex") if isinstance(single, dict) else "codex"
+        buckets = [(str(limit_id), single)]
+
+    windows: list[Window] = []
+    for fallback_id, bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        limit_id = str(bucket.get("limitId") or fallback_id)
+        limit_name = bucket.get("limitName")
+        for kind in ("primary", "secondary"):
+            window = bucket.get(kind)
+            if not isinstance(window, dict):
+                continue
+            used = _number(window.get("usedPercent"))
+            duration = _number(window.get("windowDurationMins"))
+            resets_at = _number(window.get("resetsAt"))
+            if used is None or duration is None or resets_at is None:
+                continue
+            windows.append(
+                Window(
+                    limit_id=limit_id,
+                    limit_name=str(limit_name) if limit_name else None,
+                    kind=kind,
+                    used_percent=max(0.0, min(100.0, used)),
+                    duration_minutes=max(0, int(duration)),
+                    resets_at=int(resets_at),
+                )
+            )
+    return sorted(windows, key=lambda item: (item.duration_minutes, item.limit_id, item.kind))
+
+
+def _mask_email(email: str | None) -> str:
+    if not email or "@" not in email:
+        return "未提供"
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        masked = local[:1] + "*"
+    else:
+        masked = local[:2] + "*" * min(5, len(local) - 2)
+    return f"{masked}@{domain}"
+
+
+def _format_percent(value: float) -> str:
+    rounded = round(value, 1)
+    return str(int(rounded)) if rounded.is_integer() else f"{rounded:.1f}"
+
+
+def _bar(remaining_percent: float, width: int = 20) -> str:
+    filled = round(width * remaining_percent / 100.0)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _window_label(minutes: int) -> str:
+    if minutes == 10_080:
+        return "周额度"
+    if minutes % 10_080 == 0 and minutes:
+        return f"{minutes // 10_080} 周窗口"
+    if minutes % 1_440 == 0 and minutes:
+        return f"{minutes // 1_440} 天窗口"
+    if minutes % 60 == 0 and minutes:
+        return f"{minutes // 60} 小时窗口"
+    return f"{minutes} 分钟窗口"
+
+
+def _local_datetime(timestamp: int) -> datetime:
+    return datetime.fromtimestamp(timestamp).astimezone()
+
+
+def extract_official_daily_tokens(usage_result: Any) -> dict[date, int]:
+    if not isinstance(usage_result, dict):
+        return {}
+    buckets = usage_result.get("dailyUsageBuckets")
+    if not isinstance(buckets, list):
+        return {}
+    result: dict[date, int] = {}
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        try:
+            bucket_day = date.fromisoformat(str(bucket.get("startDate")))
+        except (TypeError, ValueError):
+            continue
+        tokens = bucket.get("tokens")
+        if isinstance(tokens, bool) or not isinstance(tokens, (int, float)):
+            continue
+        result[bucket_day] = max(0, int(tokens))
+    return result
+
+
+def extract_today_tokens(usage_result: Any, day: str | None = None) -> int | None:
+    """Compatibility helper for callers that need an exact official day bucket."""
+    target = date.fromisoformat(day) if day else date.today()
+    return extract_official_daily_tokens(usage_result).get(target)
+
+
+def _parse_event_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.astimezone()
+
+
+def read_local_tokens_for_day(target: date, sessions_root: Path | None = None) -> int | None:
+    """Sum per-call token deltas from local Codex session events for one local day."""
+    if sessions_root is None:
+        codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+        sessions_root = codex_home / "sessions"
+    if not sessions_root.is_dir():
+        return None
+
+    day_start = datetime.combine(target, datetime_time.min).astimezone()
+    total = 0
+    for path in sessions_root.rglob("*.jsonl"):
+        try:
+            if path.stat().st_mtime < day_start.timestamp():
+                continue
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(record, dict) or record.get("type") != "event_msg":
+                        continue
+                    event_time = _parse_event_datetime(record.get("timestamp"))
+                    if event_time is None or event_time.date() != target:
+                        continue
+                    payload = record.get("payload")
+                    if not isinstance(payload, dict) or payload.get("type") != "token_count":
+                        continue
+                    info = payload.get("info")
+                    last = info.get("last_token_usage") if isinstance(info, dict) else None
+                    tokens = last.get("total_tokens") if isinstance(last, dict) else None
+                    if isinstance(tokens, bool) or not isinstance(tokens, (int, float)):
+                        continue
+                    total += max(0, int(tokens))
+        except OSError:
+            continue
+    return total
+
+
+def previous_reporting_day(today: date) -> tuple[date, bool]:
+    target = today - timedelta(days=1)
+    weekend_fallback = target.weekday() >= 5
+    while target.weekday() >= 5:
+        target -= timedelta(days=1)
+    return target, weekend_fallback
+
+
+def build_usage_stats(
+    usage_result: Any,
+    *,
+    now: datetime | None = None,
+    sessions_root: Path | None = None,
+) -> dict[str, Any]:
+    local_now = (now or datetime.now().astimezone()).astimezone()
+    today = local_now.date()
+    official = extract_official_daily_tokens(usage_result)
+    today_local = read_local_tokens_for_day(today, sessions_root=sessions_root)
+    comparison_day, weekend_fallback = previous_reporting_day(today)
+
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    official_week = sum(tokens for day, tokens in official.items() if week_start <= day < today)
+    official_month = sum(tokens for day, tokens in official.items() if month_start <= day < today)
+    week_tokens = official_week + today_local if today_local is not None else official_week
+    month_tokens = official_month + today_local if today_local is not None else official_month
+
+    return {
+        "todayDate": today.isoformat(),
+        "todayTokens": today_local,
+        "todaySource": "local_session_events",
+        "comparisonDate": comparison_day.isoformat(),
+        "comparisonLabel": "上周五" if weekend_fallback else "昨日",
+        "comparisonTokens": official.get(comparison_day),
+        "comparisonSource": "official_daily_usage",
+        "weekStartDate": week_start.isoformat(),
+        "weekTokens": week_tokens,
+        "weekOfficialTokens": official_week,
+        "monthStartDate": month_start.isoformat(),
+        "monthTokens": month_tokens,
+        "monthOfficialTokens": official_month,
+        "aggregateSource": "official_history_plus_local_today",
+        "officialLatestDate": max(official).isoformat() if official else None,
+    }
+
+
+def _format_tokens_wan(value: int) -> str:
+    wan = (Decimal(value) / Decimal(10_000)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    return f"{wan:.1f}万"
+
+
+def _countdown(timestamp: int, now: int) -> str:
+    seconds = max(0, timestamp - now)
+    days, seconds = divmod(seconds, 86_400)
+    hours, seconds = divmod(seconds, 3_600)
+    minutes = seconds // 60
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}天")
+    if hours or days:
+        parts.append(f"{hours}小时")
+    parts.append(f"{minutes}分")
+    return " ".join(parts)
+
+
+def _plan_and_credits(limits_result: dict[str, Any], windows: list[Window]) -> tuple[str, dict[str, Any] | None]:
+    candidates: list[dict[str, Any]] = []
+    by_id = limits_result.get("rateLimitsByLimitId")
+    if isinstance(by_id, dict):
+        candidates.extend(item for item in by_id.values() if isinstance(item, dict))
+    single = limits_result.get("rateLimits")
+    if isinstance(single, dict):
+        candidates.append(single)
+
+    plan = "未知"
+    credits = None
+    for bucket in candidates:
+        if plan == "未知" and bucket.get("planType"):
+            plan = str(bucket["planType"])
+        if credits is None and isinstance(bucket.get("credits"), dict):
+            credits = bucket["credits"]
+    return plan, credits
+
+
+def render_markdown(data: dict[str, Any], show_email: bool = False) -> str:
+    account_result = data.get("account", {})
+    account = account_result.get("account") if isinstance(account_result, dict) else None
+    if not isinstance(account, dict):
+        raise QuotaError("Codex 当前没有已登录的 ChatGPT 账号。")
+    if account.get("type") not in {"chatgpt", "chatgptAuthTokens", "agentIdentity", "personalAccessToken"}:
+        raise QuotaError("当前认证方式不提供 ChatGPT Codex 额度；请使用 ChatGPT 账号登录。")
+
+    limits_result = data.get("limits", {})
+    if not isinstance(limits_result, dict):
+        raise QuotaError("Codex 额度数据格式无效。")
+    windows = extract_windows(limits_result)
+    if not windows:
+        raise QuotaError("Codex 没有返回可显示的额度窗口。")
+
+    email = account.get("email")
+    account_label = str(email) if show_email and email else _mask_email(email)
+    plan, credits = _plan_and_credits(limits_result, windows)
+    if plan == "未知" and account.get("planType"):
+        plan = str(account["planType"])
+
+    fetched_at = int(data.get("fetchedAt") or time.time())
+    stats = data.get("usageStats")
+    if not isinstance(stats, dict):
+        stats = build_usage_stats(data.get("usage"))
+    today_tokens = stats.get("todayTokens")
+    comparison_tokens = stats.get("comparisonTokens")
+    week_official_tokens = stats.get("weekOfficialTokens")
+    month_official_tokens = stats.get("monthOfficialTokens")
+    comparison_label = stats.get("comparisonLabel") or "昨日"
+    comparison_date = stats.get("comparisonDate") or "--"
+    lines = [
+        "## Codex 实际额度",
+        "",
+        f"账号：{account_label}　|　套餐：{plan}",
+        f"今日 Tokens（本机实时）：**{_format_tokens_wan(today_tokens)}**" if isinstance(today_tokens, int) else "今日 Tokens（本机实时）：**暂无数据**",
+        f"{comparison_label} Tokens（官方 · {comparison_date}）：**{_format_tokens_wan(comparison_tokens)}**" if isinstance(comparison_tokens, int) else f"{comparison_label} Tokens（官方 · {comparison_date}）：**暂无数据**",
+        f"本周 Tokens：**{_format_tokens_wan(week_official_tokens)}（官方历史） + {_format_tokens_wan(today_tokens)}（今日实时）**" if isinstance(week_official_tokens, int) and isinstance(today_tokens, int) else "本周 Tokens：**暂无数据**",
+        f"本月 Tokens：**{_format_tokens_wan(month_official_tokens)}（官方历史） + {_format_tokens_wan(today_tokens)}（今日实时）**" if isinstance(month_official_tokens, int) and isinstance(today_tokens, int) else "本月 Tokens：**暂无数据**",
+        "",
+    ]
+
+    for window in windows:
+        label = _window_label(window.duration_minutes)
+        remaining = window.remaining_percent
+        reset = _local_datetime(window.resets_at)
+        zone = reset.tzname() or "本地时间"
+        bucket_label = window.limit_name or window.limit_id
+        lines.extend(
+            [
+                f"### {label}",
+                "",
+                f"`{_bar(remaining)}`  **剩余 {_format_percent(remaining)}%**（已用 {_format_percent(window.used_percent)}%）",
+                "",
+                f"- 刷新时间：{reset:%Y-%m-%d %H:%M:%S} {zone}",
+                f"- 刷新倒计时：{_countdown(window.resets_at, fetched_at)}",
+                f"- 额度桶：{bucket_label}",
+                "",
+            ]
+        )
+
+    reset_info = limits_result.get("rateLimitResetCredits")
+    if isinstance(reset_info, dict) and isinstance(reset_info.get("availableCount"), int):
+        lines.append(f"可用额度重置券：**{reset_info['availableCount']} 次**（仅显示，不会自动使用）")
+
+    if credits is not None:
+        if credits.get("unlimited") is True:
+            lines.append("额外 credits：无限")
+        elif credits.get("hasCredits") is True or credits.get("balance") not in (None, ""):
+            lines.append(f"额外 credits 余额：{credits.get('balance', '未知')}")
+
+    fetched = _local_datetime(fetched_at)
+    lines.extend(
+        [
+            "",
+            f"数据获取时间：{fetched:%Y-%m-%d %H:%M:%S} {fetched.tzname() or '本地时间'}",
+            "",
+            "> 今日 Tokens 来自本机 Codex 会话的实时 token 事件；对比日来自官方每日活动桶。本周和本月为“官方历史 + 本机今日”，不包含其他设备尚未回传的当日数据。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="显示真实 Codex 额度与刷新时间")
+    parser.add_argument("--json", action="store_true", help="输出官方接口原始 JSON")
+    parser.add_argument("--show-email", action="store_true", help="显示完整账号邮箱")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help="等待 app-server 响应的秒数（默认 20）",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        data = fetch_live_data(max(1.0, args.timeout))
+        data["usageStats"] = build_usage_stats(data.get("usage"))
+        if args.json:
+            print(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            print(render_markdown(data, show_email=args.show_email))
+        return 0
+    except QuotaError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("错误：操作已取消。", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
