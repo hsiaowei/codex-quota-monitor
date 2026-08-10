@@ -1,6 +1,6 @@
 # codex-quota-monitor 操作手册
 
-> 适用范围：本手册按用户 `hsiaowei` 当前这台 Mac 的实际安装路径编写。插件已安装在个人 marketplace `personal` 中。
+> 适用范围：本手册适用于 macOS；示例源码路径为 `$HOME/Workspace/codex-quota-monitor`。插件已安装在个人 marketplace `personal` 中。
 
 ## 1. 插件用途
 
@@ -40,13 +40,13 @@
 插件源目录固定为：
 
 ```text
-/Users/hsiaowei/Workspace/codex-quota-monitor
+$HOME/Workspace/codex-quota-monitor
 ```
 
 ### 3.1 启动菜单栏
 
 ```bash
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py"
 ```
 
 正常提示：
@@ -58,7 +58,7 @@ python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py
 ### 3.2 停止菜单栏
 
 ```bash
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py --stop
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --stop
 ```
 
 ### 3.3 重启菜单栏
@@ -66,8 +66,8 @@ python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py
 当前启动器没有单独的 `--restart` 参数。重启时依次执行下面两条命令：
 
 ```bash
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py --stop
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --stop
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py"
 ```
 
 第一条命令关闭现有程序，第二条命令重新打开程序。
@@ -77,8 +77,8 @@ python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py
 如果修改过插件、界面没有更新，或菜单栏程序无法正常打开，执行：
 
 ```bash
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py --stop
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py --rebuild
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --stop
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --rebuild
 ```
 
 `--rebuild` 会重新编译菜单栏应用，然后自动打开。
@@ -94,19 +94,19 @@ xcrun clang --version
 ### 3.5 在终端查看额度
 
 ```bash
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/codex_quota.py
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/codex_quota.py"
 ```
 
 ### 3.6 查看机器可读的 JSON
 
 ```bash
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/codex_quota.py --json
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/codex_quota.py" --json
 ```
 
 默认会遮住部分邮箱地址。如果明确需要显示完整邮箱，可运行：
 
 ```bash
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/codex_quota.py --show-email
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/codex_quota.py" --show-email
 ```
 
 ### 3.7 确认程序是否正在运行
@@ -176,8 +176,8 @@ codex plugin add codex-quota-monitor@personal
 
 ```bash
 codex plugin add codex-quota-monitor@personal
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py --stop
-python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py --rebuild
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --stop
+python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --rebuild
 ```
 
 然后新建一个 Codex 任务。
@@ -186,11 +186,11 @@ python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py
 
 | 操作 | 命令 |
 |---|---|
-| 启动 | `python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py` |
-| 停止 | `python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py --stop` |
+| 启动 | `python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py"` |
+| 停止 | `python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --stop` |
 | 重启 | 先运行停止命令，再运行启动命令 |
 | 强制重建并重启 | 先运行停止命令，再运行带 `--rebuild` 的启动命令 |
-| 查看额度 | `python3 /Users/hsiaowei/Workspace/codex-quota-monitor/scripts/codex_quota.py` |
+| 查看额度 | `python3 "$HOME/Workspace/codex-quota-monitor/scripts/codex_quota.py"` |
 | 重新安装 | `codex plugin add codex-quota-monitor@personal` |
 
 注意：`--stop` 会关闭所有名称为 `CodexQuotaMenu` 的进程。通常只会有一个实例。
