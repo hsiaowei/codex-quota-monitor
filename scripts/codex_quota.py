@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CLIENT_VERSION = "0.5.0"
+CLIENT_VERSION = "0.5.1"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 CACHE_VERSION = 1
 
@@ -442,6 +442,12 @@ def build_usage_stats(
 
 def _format_tokens_wan(value: int) -> str:
     wan = (Decimal(value) / Decimal(10_000)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    if value >= 100_000_000:
+        yi = int(wan // Decimal(10_000))
+        remainder_wan = wan - Decimal(yi * 10_000)
+        if remainder_wan == 0:
+            return f"{yi}亿"
+        return f"{yi}亿{remainder_wan:.1f}万"
     return f"{wan:.1f}万"
 
 

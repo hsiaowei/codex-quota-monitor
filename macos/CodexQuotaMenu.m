@@ -294,7 +294,7 @@ static NSError *QuotaError(NSString *message) {
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"0.5.0"}}},
+                                           @"version": @"0.5.1"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -584,13 +584,30 @@ static NSError *QuotaError(NSString *message) {
 
 - (NSString *)formatTokensWan:(NSNumber *)tokens {
     if (![tokens isKindOfClass:NSNumber.class]) return @"暂无数据";
+    NSDecimalNumber *tokenCount = [NSDecimalNumber decimalNumberWithDecimal:tokens.decimalValue];
+    NSDecimalNumber *wan = [tokenCount decimalNumberByDividingBy:[NSDecimalNumber decimalNumberWithString:@"10000"]];
+    NSDecimalNumberHandler *rounding = [NSDecimalNumberHandler decimalNumberHandlerWithRoundingMode:NSRoundPlain
+                                                                                              scale:1
+                                                                                   raiseOnExactness:NO
+                                                                                    raiseOnOverflow:NO
+                                                                                   raiseOnUnderflow:NO
+                                                                                raiseOnDivideByZero:NO];
+    wan = [wan decimalNumberByRoundingAccordingToBehavior:rounding];
     NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
     formatter.numberStyle = NSNumberFormatterDecimalStyle;
     formatter.minimumFractionDigits = 1;
     formatter.maximumFractionDigits = 1;
     formatter.roundingMode = NSNumberFormatterRoundHalfUp;
     formatter.usesGroupingSeparator = NO;
-    NSNumber *wan = @(tokens.doubleValue / 10000.0);
+    if (tokens.longLongValue >= 100000000) {
+        NSInteger yi = wan.integerValue / 10000;
+        NSDecimalNumber *remainder = [wan decimalNumberBySubtracting:
+            [NSDecimalNumber decimalNumberWithMantissa:(unsigned long long)yi exponent:4 isNegative:NO]];
+        if ([remainder compare:NSDecimalNumber.zero] == NSOrderedSame) {
+            return [NSString stringWithFormat:@"%ld亿", (long)yi];
+        }
+        return [NSString stringWithFormat:@"%ld亿%@万", (long)yi, [formatter stringFromNumber:remainder]];
+    }
     return [NSString stringWithFormat:@"%@万", [formatter stringFromNumber:wan]];
 }
 

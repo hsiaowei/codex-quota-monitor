@@ -84,8 +84,11 @@ the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
 - Weekly and monthly token statistics equal official historical daily buckets
   before today plus today's local real-time total. Never add the official
   current-day bucket, because that would double-count today.
-- Display all token counts in units of `万`, with exactly one decimal place and
-  round-half-up behavior.
+- Display token counts below 100,000,000 in units of `万`. At or above
+  100,000,000, split them into `亿` plus the remaining `万`, for example
+  `1亿2345.6万`. Keep exactly one decimal place on the `万` portion and use
+  round-half-up behavior. Omit the `万` portion when its rounded remainder is
+  zero, so 200,000,000 displays as `2亿`, not `2亿0.0万`.
 - Local session files may be parsed only for event timestamps, event types, and
   numeric token counters. Never display, save, or inspect prompt or response
   contents.

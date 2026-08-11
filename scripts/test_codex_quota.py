@@ -134,6 +134,14 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(MODULE._format_tokens_wan(455474), "45.5万")
         self.assertEqual(MODULE._format_tokens_wan(10500), "1.1万")
 
+    def test_token_format_switches_to_yi_and_wan_at_one_hundred_million(self):
+        self.assertEqual(MODULE._format_tokens_wan(99_999_499), "9999.9万")
+        self.assertEqual(MODULE._format_tokens_wan(100_000_000), "1亿")
+        self.assertEqual(MODULE._format_tokens_wan(123_456_000), "1亿2345.6万")
+        self.assertEqual(MODULE._format_tokens_wan(199_999_999), "2亿")
+        self.assertEqual(MODULE._format_tokens_wan(200_352_000), "2亿35.2万")
+        self.assertEqual(MODULE._format_tokens_wan(1_234_567_000), "12亿3456.7万")
+
     def test_live_official_usage_is_cached_and_reused_on_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)
