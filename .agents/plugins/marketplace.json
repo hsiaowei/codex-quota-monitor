@@ -1,0 +1,20 @@
+{
+  "name": "codex-quota-monitor-local",
+  "interface": {
+    "displayName": "Codex Quota Monitor"
+  },
+  "plugins": [
+    {
+      "name": "codex-quota-monitor",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
