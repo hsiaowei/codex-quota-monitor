@@ -8,13 +8,15 @@ contents_dir="$app_dir/Contents"
 binary_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
 build_dir="$plugin_root/.build"
+module_cache=$(mktemp -d "${TMPDIR:-/tmp}/codex-quota-module-cache.XXXXXX")
+trap 'rm -rf "$module_cache"' EXIT
 
-mkdir -p "$binary_dir" "$resources_dir" "$build_dir/module-cache"
+mkdir -p "$binary_dir" "$resources_dir" "$build_dir"
 xcrun clang \
   -O \
   -fobjc-arc \
   -fmodules \
-  -fmodules-cache-path="$build_dir/module-cache" \
+  -fmodules-cache-path="$module_cache" \
   -framework Cocoa \
   "$plugin_root/macos/CodexQuotaMenu.m" \
   -o "$binary_dir/CodexQuotaMenu"

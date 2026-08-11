@@ -134,6 +134,72 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(MODULE._format_tokens_wan(455474), "45.5万")
         self.assertEqual(MODULE._format_tokens_wan(10500), "1.1万")
 
+    def test_live_official_usage_is_cached_and_reused_on_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            cache = root / "official.json"
+            sessions = root / "sessions"
+            sessions.mkdir()
+            now = datetime(2026, 8, 10, 10, tzinfo=timezone.utc).astimezone()
+            live_usage = {
+                "dailyUsageBuckets": [
+                    {"startDate": "2026-08-07", "tokens": 120000},
+                    {"startDate": "2026-08-09", "tokens": 30000},
+                ]
+            }
+            fresh = MODULE.build_usage_stats(live_usage, now=now, sessions_root=sessions, cache_path=cache)
+            self.assertTrue(cache.is_file())
+            self.assertFalse(fresh["officialIsCached"])
+            self.assertIsNone(fresh["officialCacheFetchedAt"])
+
+            cached = MODULE.build_usage_stats(None, now=now, sessions_root=sessions, cache_path=cache)
+            self.assertTrue(cached["officialIsCached"])
+            self.assertEqual(cached["officialCacheFetchedAt"], int(now.timestamp()))
+            self.assertEqual(cached["comparisonTokens"], 120000)
+            self.assertEqual(cached["monthOfficialTokens"], 150000)
+
+    def test_first_run_without_official_cache_is_unknown_not_zero(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            stats = MODULE.build_usage_stats(
+                None,
+                now=datetime(2026, 8, 10, 10, tzinfo=timezone.utc).astimezone(),
+                sessions_root=sessions,
+                cache_path=root / "missing-cache.json",
+            )
+            self.assertIsNone(stats["comparisonTokens"])
+            self.assertIsNone(stats["weekOfficialTokens"])
+            self.assertIsNone(stats["monthOfficialTokens"])
+            self.assertFalse(stats["officialIsCached"])
+
+    def test_live_recovery_clears_cached_state_and_replaces_cache(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            cache = root / "official.json"
+            sessions = root / "sessions"
+            sessions.mkdir()
+            first_now = datetime(2026, 8, 10, 9, tzinfo=timezone.utc).astimezone()
+            second_now = datetime(2026, 8, 10, 10, tzinfo=timezone.utc).astimezone()
+            MODULE.build_usage_stats(
+                {"dailyUsageBuckets": [{"startDate": "2026-08-07", "tokens": 100000}]},
+                now=first_now,
+                sessions_root=sessions,
+                cache_path=cache,
+            )
+            recovered = MODULE.build_usage_stats(
+                {"dailyUsageBuckets": [{"startDate": "2026-08-07", "tokens": 200000}]},
+                now=second_now,
+                sessions_root=sessions,
+                cache_path=cache,
+            )
+            self.assertFalse(recovered["officialIsCached"])
+            self.assertEqual(recovered["comparisonTokens"], 200000)
+            cached, fetched_at = MODULE._load_official_usage_cache(cache)
+            self.assertEqual(cached[datetime(2026, 8, 7).date()], 200000)
+            self.assertEqual(fetched_at, int(second_now.timestamp()))
+
     def test_week_and_month_show_official_and_today_separately(self):
         data = deepcopy(FIXTURE)
         data["usageStats"] = {
@@ -147,6 +213,40 @@ class QuotaTests(unittest.TestCase):
         output = MODULE.render_markdown(data)
         self.assertIn("本周 Tokens：**150.1万（官方历史） + 50.1万（今日实时）**", output)
         self.assertIn("本月 Tokens：**350.1万（官方历史） + 50.1万（今日实时）**", output)
+
+    def test_cached_markdown_marks_only_official_values_and_shows_cache_time_once(self):
+        data = deepcopy(FIXTURE)
+        data["usageStats"] = {
+            "todayTokens": 501000,
+            "comparisonDate": "2026-08-07",
+            "comparisonLabel": "上周五",
+            "comparisonTokens": 100000,
+            "weekOfficialTokens": 1501000,
+            "monthOfficialTokens": 3501000,
+            "officialIsCached": True,
+            "officialCacheFetchedAt": 1786328431,
+        }
+        output = MODULE.render_markdown(data)
+        self.assertIn("ⓘ（数据缓存时间", output)
+        self.assertEqual(output.count("数据缓存时间"), 1)
+        self.assertIn("**🟡 150.1万（官方历史） + 50.1万（今日实时）**", output)
+        self.assertIn("今日 Tokens（本机实时）：**50.1万**", output)
+
+    def test_no_cache_markdown_shows_unknown_official_values(self):
+        data = deepcopy(FIXTURE)
+        data["usageStats"] = {
+            "todayTokens": 501000,
+            "comparisonDate": "2026-08-07",
+            "comparisonLabel": "上周五",
+            "comparisonTokens": None,
+            "weekOfficialTokens": None,
+            "monthOfficialTokens": None,
+            "officialIsCached": False,
+        }
+        output = MODULE.render_markdown(data)
+        self.assertIn("上周五 Tokens（官方 · 2026-08-07）：**暂无数据**", output)
+        self.assertIn("本周 Tokens：**暂无数据（官方历史） + 50.1万（今日实时）**", output)
+        self.assertNotIn("数据缓存时间", output)
 
     def test_show_email(self):
         output = MODULE.render_markdown(FIXTURE, show_email=True)

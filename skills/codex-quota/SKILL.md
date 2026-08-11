@@ -5,8 +5,10 @@ description: Read and display the user's real Codex usage limits, local real-tim
 
 # Codex Quota
 
-Use the bundled read-only script to retrieve live account limits from the local
-Codex app-server. Do not estimate quota from conversation length or token count.
+Use the bundled script to retrieve live account limits from the local Codex
+app-server. Do not estimate quota from conversation length or token count. The
+script may persist only official daily numeric usage buckets and their successful
+fetch time for outage fallback; it must never cache authentication material.
 
 ## Run
 
@@ -51,9 +53,13 @@ copy. To stop it when the user explicitly asks, run:
 python3 <plugin-root>/scripts/launch_menu_bar.py --stop
 ```
 
+When the repository's `scripts/codex-use.sh` has been linked as `codex-use`,
+the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
+`codex-use restart`, and `codex-use status`.
+
 ## Safety and accuracy
 
-- This skill is read-only. Never consume a rate-limit reset credit automatically.
+- Never consume a rate-limit reset credit automatically.
 - Never open, print, copy, or parse Codex authentication files or tokens.
 - The app-server owns authentication and returns only account metadata and quota
   state needed for the report.
@@ -65,6 +71,16 @@ python3 <plugin-root>/scripts/launch_menu_bar.py --stop
   yesterday is Saturday or Sunday, use the preceding Friday. If that exact
   official bucket is missing, display `暂无数据`; never turn a missing bucket into
   zero.
+- After a successful official daily-usage response, cache only its date/token
+  map and the local successful-fetch timestamp. If that API is unavailable,
+  reuse the last cache, mark all cached official values yellow, and show `ⓘ`
+  plus `（数据缓存时间MM-dd HH:mm:ss）` only on the comparison row. Clicking
+  `ⓘ` must explain that the official API is unavailable and the yellow values
+  come from local cache. Keep today's local value in its normal color. Clear all
+  cache indicators automatically as soon as live official data returns.
+- If neither live official data nor a cache exists, display `暂无数据` for the
+  comparison, weekly official, and monthly official values; never display zero
+  for missing data.
 - Weekly and monthly token statistics equal official historical daily buckets
   before today plus today's local real-time total. Never add the official
   current-day bucket, because that would double-count today.

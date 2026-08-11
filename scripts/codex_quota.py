@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CLIENT_VERSION = "0.1.0"
+CLIENT_VERSION = "0.5.0"
 DEFAULT_TIMEOUT_SECONDS = 20.0
+CACHE_VERSION = 1
 
 
 class QuotaError(RuntimeError):
@@ -265,6 +266,69 @@ def extract_official_daily_tokens(usage_result: Any) -> dict[date, int]:
     return result
 
 
+def official_usage_cache_path() -> Path:
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+    return codex_home / "codex-quota-monitor" / "official-usage-cache.json"
+
+
+def _load_official_usage_cache(cache_path: Path) -> tuple[dict[date, int], int | None]:
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, None
+    if not isinstance(payload, dict) or payload.get("version") != CACHE_VERSION:
+        return {}, None
+    raw_daily = payload.get("dailyUsageTokens")
+    fetched_at = payload.get("fetchedAt")
+    if not isinstance(raw_daily, dict) or isinstance(fetched_at, bool) or not isinstance(fetched_at, (int, float)):
+        return {}, None
+    daily: dict[date, int] = {}
+    for raw_day, raw_tokens in raw_daily.items():
+        try:
+            parsed_day = date.fromisoformat(str(raw_day))
+        except ValueError:
+            continue
+        if isinstance(raw_tokens, bool) or not isinstance(raw_tokens, (int, float)):
+            continue
+        daily[parsed_day] = max(0, int(raw_tokens))
+    return daily, int(fetched_at) if daily else None
+
+
+def _save_official_usage_cache(cache_path: Path, daily: dict[date, int], fetched_at: int) -> None:
+    payload = {
+        "version": CACHE_VERSION,
+        "fetchedAt": fetched_at,
+        "dailyUsageTokens": {day.isoformat(): tokens for day, tokens in sorted(daily.items())},
+    }
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, cache_path)
+    except OSError:
+        # Cache failures must never prevent live quota data from being displayed.
+        return
+
+
+def resolve_official_daily_tokens(
+    usage_result: Any,
+    *,
+    cache_path: Path | None = None,
+    fetched_at: int | None = None,
+) -> tuple[dict[date, int], bool, int | None]:
+    live = extract_official_daily_tokens(usage_result)
+    if live:
+        cache_time = int(fetched_at or time.time())
+        if cache_path is not None:
+            _save_official_usage_cache(cache_path, live, cache_time)
+        return live, False, None
+    if cache_path is not None:
+        cached, cache_time = _load_official_usage_cache(cache_path)
+        if cached:
+            return cached, True, cache_time
+    return {}, False, None
+
+
 def extract_today_tokens(usage_result: Any, day: str | None = None) -> int | None:
     """Compatibility helper for callers that need an exact official day bucket."""
     target = date.fromisoformat(day) if day else date.today()
@@ -335,10 +399,15 @@ def build_usage_stats(
     *,
     now: datetime | None = None,
     sessions_root: Path | None = None,
+    cache_path: Path | None = None,
 ) -> dict[str, Any]:
     local_now = (now or datetime.now().astimezone()).astimezone()
     today = local_now.date()
-    official = extract_official_daily_tokens(usage_result)
+    official, official_is_cached, official_cache_fetched_at = resolve_official_daily_tokens(
+        usage_result,
+        cache_path=cache_path,
+        fetched_at=int(local_now.timestamp()),
+    )
     today_local = read_local_tokens_for_day(today, sessions_root=sessions_root)
     comparison_day, weekend_fallback = previous_reporting_day(today)
 
@@ -346,8 +415,9 @@ def build_usage_stats(
     month_start = today.replace(day=1)
     official_week = sum(tokens for day, tokens in official.items() if week_start <= day < today)
     official_month = sum(tokens for day, tokens in official.items() if month_start <= day < today)
-    week_tokens = official_week + today_local if today_local is not None else official_week
-    month_tokens = official_month + today_local if today_local is not None else official_month
+    has_official = bool(official)
+    week_tokens = official_week + today_local if has_official and today_local is not None else None
+    month_tokens = official_month + today_local if has_official and today_local is not None else None
 
     return {
         "todayDate": today.isoformat(),
@@ -359,12 +429,14 @@ def build_usage_stats(
         "comparisonSource": "official_daily_usage",
         "weekStartDate": week_start.isoformat(),
         "weekTokens": week_tokens,
-        "weekOfficialTokens": official_week,
+        "weekOfficialTokens": official_week if has_official else None,
         "monthStartDate": month_start.isoformat(),
         "monthTokens": month_tokens,
-        "monthOfficialTokens": official_month,
+        "monthOfficialTokens": official_month if has_official else None,
         "aggregateSource": "official_history_plus_local_today",
         "officialLatestDate": max(official).isoformat() if official else None,
+        "officialIsCached": official_is_cached,
+        "officialCacheFetchedAt": official_cache_fetched_at,
     }
 
 
@@ -437,14 +509,25 @@ def render_markdown(data: dict[str, Any], show_email: bool = False) -> str:
     month_official_tokens = stats.get("monthOfficialTokens")
     comparison_label = stats.get("comparisonLabel") or "昨日"
     comparison_date = stats.get("comparisonDate") or "--"
+    official_is_cached = stats.get("officialIsCached") is True
+    cache_fetched_at = stats.get("officialCacheFetchedAt")
+    cache_suffix = ""
+    if official_is_cached and isinstance(cache_fetched_at, (int, float)):
+        cache_time = _local_datetime(int(cache_fetched_at))
+        cache_suffix = f" ⓘ（数据缓存时间{cache_time:%m-%d %H:%M:%S}）"
+    official_marker = "🟡 " if official_is_cached else ""
+    comparison_value = _format_tokens_wan(comparison_tokens) if isinstance(comparison_tokens, int) else "暂无数据"
+    week_official_value = _format_tokens_wan(week_official_tokens) if isinstance(week_official_tokens, int) else "暂无数据"
+    month_official_value = _format_tokens_wan(month_official_tokens) if isinstance(month_official_tokens, int) else "暂无数据"
+    today_value = _format_tokens_wan(today_tokens) if isinstance(today_tokens, int) else "暂无数据"
     lines = [
         "## Codex 实际额度",
         "",
         f"账号：{account_label}　|　套餐：{plan}",
         f"今日 Tokens（本机实时）：**{_format_tokens_wan(today_tokens)}**" if isinstance(today_tokens, int) else "今日 Tokens（本机实时）：**暂无数据**",
-        f"{comparison_label} Tokens（官方 · {comparison_date}）：**{_format_tokens_wan(comparison_tokens)}**" if isinstance(comparison_tokens, int) else f"{comparison_label} Tokens（官方 · {comparison_date}）：**暂无数据**",
-        f"本周 Tokens：**{_format_tokens_wan(week_official_tokens)}（官方历史） + {_format_tokens_wan(today_tokens)}（今日实时）**" if isinstance(week_official_tokens, int) and isinstance(today_tokens, int) else "本周 Tokens：**暂无数据**",
-        f"本月 Tokens：**{_format_tokens_wan(month_official_tokens)}（官方历史） + {_format_tokens_wan(today_tokens)}（今日实时）**" if isinstance(month_official_tokens, int) and isinstance(today_tokens, int) else "本月 Tokens：**暂无数据**",
+        f"{comparison_label} Tokens（官方 · {comparison_date}）：**{official_marker}{comparison_value}**{cache_suffix}",
+        f"本周 Tokens：**{official_marker}{week_official_value}（官方历史） + {today_value}（今日实时）**",
+        f"本月 Tokens：**{official_marker}{month_official_value}（官方历史） + {today_value}（今日实时）**",
         "",
     ]
 
@@ -506,7 +589,7 @@ def main() -> int:
     args = parse_args()
     try:
         data = fetch_live_data(max(1.0, args.timeout))
-        data["usageStats"] = build_usage_stats(data.get("usage"))
+        data["usageStats"] = build_usage_stats(data.get("usage"), cache_path=official_usage_cache_path())
         if args.json:
             print(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
         else:

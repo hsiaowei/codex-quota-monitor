@@ -8,6 +8,10 @@ static NSColor *QuotaRed(void) {
     return [NSColor colorWithCalibratedRed:0.898 green:0.282 blue:0.302 alpha:1.0];
 }
 
+static NSColor *QuotaYellow(void) {
+    return [NSColor colorWithCalibratedRed:0.78 green:0.50 blue:0.04 alpha:1.0];
+}
+
 static NSColor *QuotaText(void) {
     return [NSColor colorWithCalibratedRed:0.09 green:0.13 blue:0.20 alpha:1.0];
 }
@@ -84,6 +88,60 @@ static NSError *QuotaError(NSString *message) {
     return formatter;
 }
 
+- (NSString *)officialUsageCachePath {
+    NSString *codexHome = NSProcessInfo.processInfo.environment[@"CODEX_HOME"];
+    if (codexHome.length == 0) codexHome = [@"~/.codex" stringByExpandingTildeInPath];
+    return [[codexHome stringByAppendingPathComponent:@"codex-quota-monitor"]
+            stringByAppendingPathComponent:@"official-usage-cache.json"];
+}
+
+- (NSMutableDictionary<NSString *, NSNumber *> *)officialDailyUsage:(NSDictionary *)usageResult {
+    NSMutableDictionary<NSString *, NSNumber *> *official = [NSMutableDictionary dictionary];
+    NSArray *dailyBuckets = usageResult[@"dailyUsageBuckets"];
+    if (![dailyBuckets isKindOfClass:NSArray.class]) return official;
+    for (NSDictionary *bucket in dailyBuckets) {
+        NSString *day = [bucket isKindOfClass:NSDictionary.class] ? bucket[@"startDate"] : nil;
+        NSNumber *tokens = [bucket isKindOfClass:NSDictionary.class] ? bucket[@"tokens"] : nil;
+        if ([day isKindOfClass:NSString.class] && [tokens isKindOfClass:NSNumber.class]) {
+            official[day] = @(MAX(0, tokens.longLongValue));
+        }
+    }
+    return official;
+}
+
+- (void)saveOfficialDailyUsage:(NSDictionary<NSString *, NSNumber *> *)official fetchedAt:(NSTimeInterval)fetchedAt {
+    if (official.count == 0) return;
+    NSString *path = [self officialUsageCachePath];
+    NSString *directory = path.stringByDeletingLastPathComponent;
+    [NSFileManager.defaultManager createDirectoryAtPath:directory
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+    NSDictionary *payload = @{
+        @"version": @1,
+        @"fetchedAt": @((long long)fetchedAt),
+        @"dailyUsageTokens": official
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+    if (data) [data writeToFile:path options:NSDataWritingAtomic error:nil];
+}
+
+- (NSDictionary *)loadOfficialDailyUsageCache {
+    NSData *data = [NSData dataWithContentsOfFile:[self officialUsageCachePath]];
+    NSDictionary *payload = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSDictionary *rawDaily = [payload isKindOfClass:NSDictionary.class] ? payload[@"dailyUsageTokens"] : nil;
+    NSNumber *fetchedAt = [payload isKindOfClass:NSDictionary.class] ? payload[@"fetchedAt"] : nil;
+    if (![rawDaily isKindOfClass:NSDictionary.class] || ![fetchedAt isKindOfClass:NSNumber.class]) return nil;
+    NSMutableDictionary<NSString *, NSNumber *> *daily = [NSMutableDictionary dictionary];
+    for (id rawDay in rawDaily) {
+        id rawTokens = rawDaily[rawDay];
+        if ([rawDay isKindOfClass:NSString.class] && [rawTokens isKindOfClass:NSNumber.class]) {
+            daily[rawDay] = @(MAX(0, [rawTokens longLongValue]));
+        }
+    }
+    return daily.count > 0 ? @{@"daily": daily, @"fetchedAt": fetchedAt} : nil;
+}
+
 - (NSDate *)eventDate:(NSString *)value {
     if (![value isKindOfClass:NSString.class]) return nil;
     NSISO8601DateFormatter *fractional = [[NSISO8601DateFormatter alloc] init];
@@ -145,13 +203,18 @@ static NSError *QuotaError(NSString *message) {
     NSDate *today = [calendar startOfDayForDate:now];
     NSDateFormatter *formatter = [self dayFormatter];
 
-    NSMutableDictionary<NSString *, NSNumber *> *official = [NSMutableDictionary dictionary];
-    NSArray *dailyBuckets = usageResult[@"dailyUsageBuckets"];
-    if ([dailyBuckets isKindOfClass:NSArray.class]) {
-        for (NSDictionary *bucket in dailyBuckets) {
-            NSString *day = [bucket isKindOfClass:NSDictionary.class] ? bucket[@"startDate"] : nil;
-            NSNumber *tokens = [bucket isKindOfClass:NSDictionary.class] ? bucket[@"tokens"] : nil;
-            if ([day isKindOfClass:NSString.class] && [tokens isKindOfClass:NSNumber.class]) official[day] = tokens;
+    NSMutableDictionary<NSString *, NSNumber *> *official = [self officialDailyUsage:usageResult];
+    BOOL officialIsCached = NO;
+    NSNumber *officialCacheFetchedAt = nil;
+    if (official.count > 0) {
+        [self saveOfficialDailyUsage:official fetchedAt:now.timeIntervalSince1970];
+    } else {
+        NSDictionary *cache = [self loadOfficialDailyUsageCache];
+        NSDictionary *cachedDaily = cache[@"daily"];
+        if ([cachedDaily isKindOfClass:NSDictionary.class] && cachedDaily.count > 0) {
+            official = [cachedDaily mutableCopy];
+            officialIsCached = YES;
+            officialCacheFetchedAt = cache[@"fetchedAt"];
         }
     }
 
@@ -189,15 +252,19 @@ static NSError *QuotaError(NSString *message) {
         @"todayDate": [formatter stringFromDate:today],
         @"comparisonDate": [formatter stringFromDate:comparison],
         @"comparisonLabel": weekendFallback ? @"上周五" : @"昨日",
-        @"weekTokens": @(officialWeek + localToday),
-        @"monthTokens": @(officialMonth + localToday),
-        @"weekOfficialTokens": @(officialWeek),
-        @"monthOfficialTokens": @(officialMonth)
+        @"officialIsCached": @(officialIsCached)
     } mutableCopy];
     if (todayTokens) stats[@"todayTokens"] = todayTokens;
+    if (official.count > 0) {
+        stats[@"weekTokens"] = @(officialWeek + localToday);
+        stats[@"monthTokens"] = @(officialMonth + localToday);
+        stats[@"weekOfficialTokens"] = @(officialWeek);
+        stats[@"monthOfficialTokens"] = @(officialMonth);
+    }
     NSNumber *comparisonTokens = official[stats[@"comparisonDate"]];
     if (comparisonTokens) stats[@"comparisonTokens"] = comparisonTokens;
     if (latestOfficial) stats[@"officialLatestDate"] = latestOfficial;
+    if (officialIsCached && officialCacheFetchedAt) stats[@"officialCacheFetchedAt"] = officialCacheFetchedAt;
     return stats;
 }
 
@@ -227,7 +294,7 @@ static NSError *QuotaError(NSString *message) {
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"0.4.1"}}},
+                                           @"version": @"0.5.0"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -388,6 +455,8 @@ static NSError *QuotaError(NSString *message) {
     NSTextField *_stateLabel;
     NSTextField *_todayTokensLabel;
     NSTextField *_comparisonTokensLabel;
+    NSButton *_cacheInfoButton;
+    NSTextField *_cacheTimeLabel;
     NSTextField *_weekTokensLabel;
     NSTextField *_monthTokensLabel;
     NSTextField *_windowLabel;
@@ -399,6 +468,7 @@ static NSError *QuotaError(NSString *message) {
     NSTextField *_creditsLabel;
     NSTextField *_updatedLabel;
     NSDictionary *_snapshot;
+    NSString *_cacheTimestamp;
 }
 
 - (NSTextField *)label:(NSString *)text size:(CGFloat)size weight:(NSFontWeight)weight color:(NSColor *)color {
@@ -444,6 +514,20 @@ static NSError *QuotaError(NSString *message) {
     _comparisonTokensLabel = [self label:@"昨日（官方）：正在读取…" size:11 weight:NSFontWeightRegular color:QuotaText()];
     _comparisonTokensLabel.frame = NSMakeRect(20, 226, 320, 18);
     [self.view addSubview:_comparisonTokensLabel];
+
+    _cacheInfoButton = [NSButton buttonWithTitle:@"ⓘ" target:self action:@selector(cacheInfoClicked:)];
+    _cacheInfoButton.bezelStyle = NSBezelStyleInline;
+    _cacheInfoButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+    _cacheInfoButton.contentTintColor = QuotaYellow();
+    _cacheInfoButton.frame = NSMakeRect(136, 223, 26, 24);
+    _cacheInfoButton.toolTip = @"查看缓存数据说明";
+    _cacheInfoButton.hidden = YES;
+    [self.view addSubview:_cacheInfoButton];
+
+    _cacheTimeLabel = [self label:@"" size:9 weight:NSFontWeightRegular color:QuotaYellow()];
+    _cacheTimeLabel.frame = NSMakeRect(160, 226, 180, 18);
+    _cacheTimeLabel.hidden = YES;
+    [self.view addSubview:_cacheTimeLabel];
 
     _weekTokensLabel = [self label:@"本周：正在读取…" size:11 weight:NSFontWeightRegular color:QuotaText()];
     _weekTokensLabel.frame = NSMakeRect(20, 205, 320, 18);
@@ -510,6 +594,26 @@ static NSError *QuotaError(NSString *message) {
     return [NSString stringWithFormat:@"%@万", [formatter stringFromNumber:wan]];
 }
 
+- (NSAttributedString *)aggregateTextWithPrefix:(NSString *)prefix
+                                 officialTokens:(NSNumber *)officialTokens
+                                     todayTokens:(NSNumber *)todayTokens
+                                          cached:(BOOL)cached {
+    NSDictionary *normal = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightRegular],
+        NSForegroundColorAttributeName: QuotaText()
+    };
+    NSDictionary *officialStyle = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightRegular],
+        NSForegroundColorAttributeName: cached ? QuotaYellow() : QuotaText()
+    };
+    NSMutableAttributedString *text = [[NSMutableAttributedString alloc] initWithString:prefix attributes:normal];
+    NSString *official = [NSString stringWithFormat:@"%@（官方历史）", [self formatTokensWan:officialTokens]];
+    [text appendAttributedString:[[NSAttributedString alloc] initWithString:official attributes:officialStyle]];
+    NSString *today = [NSString stringWithFormat:@" + %@（今日实时）", [self formatTokensWan:todayTokens]];
+    [text appendAttributedString:[[NSAttributedString alloc] initWithString:today attributes:normal]];
+    return text;
+}
+
 - (void)setLoading {
     _stateLabel.stringValue = @"刷新中";
     _stateLabel.textColor = NSColor.systemOrangeColor;
@@ -521,16 +625,38 @@ static NSError *QuotaError(NSString *message) {
     _stateLabel.stringValue = @"实时";
     _stateLabel.textColor = QuotaGreen();
     _todayTokensLabel.stringValue = [NSString stringWithFormat:@"今日（本机实时）：%@", [self formatTokensWan:snapshot[@"todayTokens"]]];
-    _comparisonTokensLabel.stringValue = [NSString stringWithFormat:@"%@（官方 · %@）：%@",
-                                           snapshot[@"comparisonLabel"] ?: @"昨日",
-                                           snapshot[@"comparisonDate"] ?: @"--",
-                                           [self formatTokensWan:snapshot[@"comparisonTokens"]]];
-    _weekTokensLabel.stringValue = [NSString stringWithFormat:@"本周：%@（官方历史） + %@（今日实时）",
-                                    [self formatTokensWan:snapshot[@"weekOfficialTokens"]],
-                                    [self formatTokensWan:snapshot[@"todayTokens"]]];
-    _monthTokensLabel.stringValue = [NSString stringWithFormat:@"本月：%@（官方历史） + %@（今日实时）",
-                                     [self formatTokensWan:snapshot[@"monthOfficialTokens"]],
-                                     [self formatTokensWan:snapshot[@"todayTokens"]]];
+    BOOL officialIsCached = [snapshot[@"officialIsCached"] boolValue];
+    _comparisonTokensLabel.textColor = officialIsCached ? QuotaYellow() : QuotaText();
+    _comparisonTokensLabel.frame = officialIsCached ? NSMakeRect(20, 226, 116, 18) : NSMakeRect(20, 226, 320, 18);
+    _comparisonTokensLabel.stringValue = officialIsCached
+        ? [NSString stringWithFormat:@"%@：%@", snapshot[@"comparisonLabel"] ?: @"昨日", [self formatTokensWan:snapshot[@"comparisonTokens"]]]
+        : [NSString stringWithFormat:@"%@（官方 · %@）：%@",
+             snapshot[@"comparisonLabel"] ?: @"昨日",
+             snapshot[@"comparisonDate"] ?: @"--",
+             [self formatTokensWan:snapshot[@"comparisonTokens"]]];
+
+    _cacheInfoButton.hidden = !officialIsCached;
+    _cacheTimeLabel.hidden = !officialIsCached;
+    _cacheTimestamp = nil;
+    if (officialIsCached && [snapshot[@"officialCacheFetchedAt"] isKindOfClass:NSNumber.class]) {
+        NSDateFormatter *cacheFormatter = [[NSDateFormatter alloc] init];
+        cacheFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
+        cacheFormatter.dateFormat = @"MM-dd HH:mm:ss";
+        NSDate *cacheDate = [NSDate dateWithTimeIntervalSince1970:[snapshot[@"officialCacheFetchedAt"] doubleValue]];
+        _cacheTimestamp = [cacheFormatter stringFromDate:cacheDate];
+        _cacheTimeLabel.stringValue = [NSString stringWithFormat:@"（数据缓存时间%@）", _cacheTimestamp];
+    } else {
+        _cacheTimeLabel.stringValue = @"";
+    }
+
+    _weekTokensLabel.attributedStringValue = [self aggregateTextWithPrefix:@"本周："
+                                                            officialTokens:snapshot[@"weekOfficialTokens"]
+                                                                todayTokens:snapshot[@"todayTokens"]
+                                                                     cached:officialIsCached];
+    _monthTokensLabel.attributedStringValue = [self aggregateTextWithPrefix:@"本月："
+                                                             officialTokens:snapshot[@"monthOfficialTokens"]
+                                                                 todayTokens:snapshot[@"todayTokens"]
+                                                                      cached:officialIsCached];
     _windowLabel.stringValue = snapshot[@"label"];
     double remaining = [snapshot[@"remaining"] doubleValue];
     double used = [snapshot[@"used"] doubleValue];
@@ -559,6 +685,16 @@ static NSError *QuotaError(NSString *message) {
     _stateLabel.stringValue = @"读取失败";
     _stateLabel.textColor = QuotaRed();
     _accountLabel.stringValue = error.localizedDescription;
+}
+
+- (void)cacheInfoClicked:(id)sender {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"官方接口当前不可用";
+    alert.informativeText = _cacheTimestamp.length > 0
+        ? [NSString stringWithFormat:@"黄色数据来自本机缓存。\n数据缓存时间：%@", _cacheTimestamp]
+        : @"黄色数据来自本机缓存。";
+    [alert addButtonWithTitle:@"知道了"];
+    [alert runModal];
 }
 
 - (void)updateCountdown:(NSTimer *)timer {
