@@ -3,6 +3,7 @@
 `codex-quota-monitor` 是一个适用于 macOS 的 Codex 额度监控插件，可在原生菜单栏弹窗和 Codex 对话中显示真实周额度、刷新时间以及 Token 使用统计。
 
 仓库地址：[github.com/hsiaowei/codex-quota-monitor](https://github.com/hsiaowei/codex-quota-monitor)
+<img width="381" height="405" alt="image" src="https://github.com/user-attachments/assets/4644852e-b345-4da5-96ca-6bd96dfd076e" />
 
 ## 1. 功能
 
