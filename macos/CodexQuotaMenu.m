@@ -26,11 +26,123 @@ static NSError *QuotaError(NSString *message) {
                            userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
+static NSString *QuotaCodexHome(void) {
+    NSString *codexHome = NSProcessInfo.processInfo.environment[@"CODEX_HOME"];
+    return codexHome.length > 0 ? [codexHome stringByExpandingTildeInPath]
+                                : [@"~/.codex" stringByExpandingTildeInPath];
+}
+
+static NSDateFormatter *QuotaDayFormatter(void) {
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    formatter.dateFormat = @"yyyy-MM-dd";
+    return formatter;
+}
+
+static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
+    if (![limits isKindOfClass:NSDictionary.class]) return nil;
+    NSMutableArray<NSDictionary *> *buckets = [NSMutableArray array];
+    NSDictionary *single = limits[@"rateLimits"];
+    if ([single isKindOfClass:NSDictionary.class]) [buckets addObject:single];
+    NSDictionary *byID = limits[@"rateLimitsByLimitId"];
+    if ([byID isKindOfClass:NSDictionary.class]) {
+        for (id value in byID.allValues) {
+            if ([value isKindOfClass:NSDictionary.class]) [buckets addObject:value];
+        }
+    }
+    if ([limits[@"primary"] isKindOfClass:NSDictionary.class] ||
+        [limits[@"secondary"] isKindOfClass:NSDictionary.class]) {
+        [buckets addObject:limits];
+    }
+    for (NSDictionary *bucket in buckets) {
+        for (NSString *kind in @[@"primary", @"secondary"]) {
+            NSDictionary *window = bucket[kind];
+            NSNumber *used = [window isKindOfClass:NSDictionary.class] ? window[@"usedPercent"] : nil;
+            NSNumber *duration = [window isKindOfClass:NSDictionary.class] ? window[@"windowDurationMins"] : nil;
+            if ([used isKindOfClass:NSNumber.class] && [duration isKindOfClass:NSNumber.class] &&
+                duration.integerValue == 10080) {
+                NSMutableDictionary *result = [window mutableCopy];
+                result[@"kind"] = kind;
+                if ([bucket[@"limitId"] isKindOfClass:NSString.class]) result[@"limitId"] = bucket[@"limitId"];
+                return result;
+            }
+        }
+    }
+    return nil;
+}
+
+@interface QuotaDailyUsageTracker : NSObject
+- (NSDictionary *)recordWeeklyUsedPercent:(double)used atDate:(NSDate *)date;
+@end
+
+@implementation QuotaDailyUsageTracker
+
+- (NSString *)cachePath {
+    return [[QuotaCodexHome() stringByAppendingPathComponent:@"codex-quota-monitor"]
+            stringByAppendingPathComponent:@"daily-weekly-quota-cache.json"];
+}
+
+- (NSDictionary *)loadState {
+    NSData *data = [NSData dataWithContentsOfFile:[self cachePath]];
+    NSDictionary *payload = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return [payload isKindOfClass:NSDictionary.class] && [payload[@"version"] integerValue] == 1 ? payload : @{};
+}
+
+- (NSDictionary *)recordWeeklyUsedPercent:(double)used atDate:(NSDate *)date {
+    @synchronized (self) {
+        NSDate *observedDate = date ?: NSDate.date;
+        NSTimeInterval observedAt = observedDate.timeIntervalSince1970;
+        NSString *day = [QuotaDayFormatter() stringFromDate:observedDate];
+        NSDictionary *previous = [self loadState];
+        BOOL sameDay = [previous[@"day"] isEqual:day];
+        NSNumber *rawAccumulated = sameDay ? previous[@"accumulatedIncreasePercent"] : nil;
+        NSNumber *rawLast = sameDay ? previous[@"lastUsedPercent"] : nil;
+        NSNumber *rawStarted = sameDay ? previous[@"trackingStartedAt"] : nil;
+        double accumulated = [rawAccumulated isKindOfClass:NSNumber.class] ? MAX(0, rawAccumulated.doubleValue) : 0;
+        double current = MAX(0, MIN(100, used));
+        if ([rawLast isKindOfClass:NSNumber.class] && current > rawLast.doubleValue) {
+            accumulated += current - rawLast.doubleValue;
+        }
+        NSNumber *startedAt = [rawStarted isKindOfClass:NSNumber.class] ? rawStarted : @((long long)observedAt);
+        NSDictionary *payload = @{
+            @"version": @1,
+            @"day": day,
+            @"trackingStartedAt": startedAt,
+            @"lastObservedAt": @((long long)observedAt),
+            @"lastUsedPercent": @(current),
+            @"accumulatedIncreasePercent": @(accumulated)
+        };
+        NSString *path = [self cachePath];
+        [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent
+                                withIntermediateDirectories:YES
+                                                 attributes:nil
+                                                      error:nil];
+        NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+        if (data) [data writeToFile:path options:NSDataWritingAtomic error:nil];
+        return @{
+            @"usedPercent": @(accumulated),
+            @"trackingStartedAt": startedAt,
+            @"lastObservedAt": @((long long)observedAt)
+        };
+    }
+}
+@end
+
 @interface CodexQuotaClient : NSObject
+- (instancetype)initWithTracker:(QuotaDailyUsageTracker *)tracker;
 - (NSDictionary *)fetch:(NSError **)error;
 @end
 
-@implementation CodexQuotaClient
+@implementation CodexQuotaClient {
+    QuotaDailyUsageTracker *_tracker;
+}
+
+- (instancetype)initWithTracker:(QuotaDailyUsageTracker *)tracker {
+    self = [super init];
+    if (self) _tracker = tracker;
+    return self;
+}
 
 - (NSString *)codexPath {
     NSFileManager *manager = NSFileManager.defaultManager;
@@ -81,17 +193,11 @@ static NSError *QuotaError(NSString *message) {
 }
 
 - (NSDateFormatter *)dayFormatter {
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
-    formatter.dateFormat = @"yyyy-MM-dd";
-    return formatter;
+    return QuotaDayFormatter();
 }
 
 - (NSString *)officialUsageCachePath {
-    NSString *codexHome = NSProcessInfo.processInfo.environment[@"CODEX_HOME"];
-    if (codexHome.length == 0) codexHome = [@"~/.codex" stringByExpandingTildeInPath];
-    return [[codexHome stringByAppendingPathComponent:@"codex-quota-monitor"]
+    return [[QuotaCodexHome() stringByAppendingPathComponent:@"codex-quota-monitor"]
             stringByAppendingPathComponent:@"official-usage-cache.json"];
 }
 
@@ -154,9 +260,7 @@ static NSError *QuotaError(NSString *message) {
 }
 
 - (NSNumber *)localTokensForDate:(NSDate *)targetDate {
-    NSString *codexHome = NSProcessInfo.processInfo.environment[@"CODEX_HOME"];
-    if (codexHome.length == 0) codexHome = [@"~/.codex" stringByExpandingTildeInPath];
-    NSURL *sessionsURL = [NSURL fileURLWithPath:[codexHome stringByAppendingPathComponent:@"sessions"] isDirectory:YES];
+    NSURL *sessionsURL = [NSURL fileURLWithPath:[QuotaCodexHome() stringByAppendingPathComponent:@"sessions"] isDirectory:YES];
     NSFileManager *manager = NSFileManager.defaultManager;
     BOOL isDirectory = NO;
     if (![manager fileExistsAtPath:sessionsURL.path isDirectory:&isDirectory] || !isDirectory) return nil;
@@ -294,7 +398,7 @@ static NSError *QuotaError(NSString *message) {
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"0.5.1"}}},
+                                           @"version": @"0.6.1"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -416,8 +520,162 @@ static NSError *QuotaError(NSString *message) {
     } mutableCopy];
     if ([resetCredits isKindOfClass:NSNumber.class]) snapshot[@"resetCredits"] = resetCredits;
     if (creditsBalance) snapshot[@"creditsBalance"] = creditsBalance;
+    if ([chosen[@"duration"] integerValue] == 10080 && _tracker) {
+        NSDictionary *todayQuota = [_tracker recordWeeklyUsedPercent:used atDate:NSDate.date];
+        snapshot[@"todayWeeklyQuotaUsed"] = todayQuota[@"usedPercent"];
+        snapshot[@"todayQuotaTrackingStartedAt"] = todayQuota[@"trackingStartedAt"];
+    }
     [snapshot addEntriesFromDictionary:[self usageStats:usageResult ?: @{}]];
     return snapshot;
+}
+@end
+
+@interface CodexQuotaObserver : NSObject
+@property(nonatomic, copy) void (^onUpdate)(NSDictionary *update);
+- (instancetype)initWithTracker:(QuotaDailyUsageTracker *)tracker;
+- (void)start;
+- (void)stop;
+@end
+
+@implementation CodexQuotaObserver {
+    QuotaDailyUsageTracker *_tracker;
+    NSTask *_task;
+    NSString *_weeklyKind;
+    NSString *_weeklyLimitId;
+    BOOL _shouldRun;
+}
+
+- (instancetype)initWithTracker:(QuotaDailyUsageTracker *)tracker {
+    self = [super init];
+    if (self) _tracker = tracker;
+    return self;
+}
+
+- (NSString *)codexPath {
+    NSFileManager *manager = NSFileManager.defaultManager;
+    for (NSString *path in @[@"/usr/local/bin/codex", @"/opt/homebrew/bin/codex"]) {
+        if ([manager isExecutableFileAtPath:path]) return path;
+    }
+    NSString *pathValue = NSProcessInfo.processInfo.environment[@"PATH"];
+    for (NSString *directory in [pathValue componentsSeparatedByString:@":"]) {
+        NSString *candidate = [directory stringByAppendingPathComponent:@"codex"];
+        if ([manager isExecutableFileAtPath:candidate]) return candidate;
+    }
+    return nil;
+}
+
+- (void)send:(NSDictionary *)payload toHandle:(NSFileHandle *)handle {
+    NSData *json = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+    if (!json) return;
+    @try {
+        [handle writeData:json];
+        [handle writeData:[NSData dataWithBytes:"\n" length:1]];
+    } @catch (__unused NSException *exception) {
+    }
+}
+
+- (void)recordWindow:(NSDictionary *)window {
+    NSNumber *used = window[@"usedPercent"];
+    if (![used isKindOfClass:NSNumber.class]) return;
+    NSDictionary *tracking = [_tracker recordWeeklyUsedPercent:used.doubleValue atDate:NSDate.date];
+    NSMutableDictionary *update = [@{
+        @"currentUsed": @(MAX(0, MIN(100, used.doubleValue))),
+        @"todayWeeklyQuotaUsed": tracking[@"usedPercent"],
+        @"todayQuotaTrackingStartedAt": tracking[@"trackingStartedAt"]
+    } mutableCopy];
+    if ([window[@"resetsAt"] isKindOfClass:NSNumber.class]) update[@"resetsAt"] = window[@"resetsAt"];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.onUpdate) self.onUpdate(update);
+    });
+}
+
+- (void)handleMessage:(NSDictionary *)message {
+    NSDictionary *limits = nil;
+    if ([message[@"id"] integerValue] == 101 && [message[@"result"] isKindOfClass:NSDictionary.class]) {
+        limits = message[@"result"];
+    } else if ([message[@"method"] isEqual:@"account/rateLimits/updated"]) {
+        NSDictionary *params = message[@"params"];
+        limits = [params isKindOfClass:NSDictionary.class] ? params[@"rateLimits"] : nil;
+    }
+    if (![limits isKindOfClass:NSDictionary.class]) return;
+
+    NSDictionary *weekly = QuotaWeeklyWindowFromLimits(limits);
+    if (weekly) {
+        _weeklyKind = weekly[@"kind"];
+        _weeklyLimitId = weekly[@"limitId"];
+        [self recordWindow:weekly];
+        return;
+    }
+
+    if (_weeklyKind.length == 0) return;
+    NSString *limitId = [limits[@"limitId"] isKindOfClass:NSString.class] ? limits[@"limitId"] : nil;
+    if (_weeklyLimitId.length > 0 && limitId.length > 0 && ![_weeklyLimitId isEqual:limitId]) return;
+    NSDictionary *sparseWindow = limits[_weeklyKind];
+    if ([sparseWindow isKindOfClass:NSDictionary.class]) [self recordWindow:sparseWindow];
+}
+
+- (void)start {
+    if (_task.running) return;
+    NSString *codex = [self codexPath];
+    if (!codex) return;
+    _shouldRun = YES;
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:codex];
+    task.arguments = @[@"app-server"];
+    NSPipe *input = [NSPipe pipe];
+    NSPipe *output = [NSPipe pipe];
+    task.standardInput = input;
+    task.standardOutput = output;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    if (![task launchAndReturnError:nil]) return;
+    _task = task;
+    [self send:@{@"method": @"initialize", @"id": @100,
+                 @"params": @{@"clientInfo": @{@"name": @"codex_quota_observer",
+                                                   @"title": @"Codex Quota Observer",
+                                                   @"version": @"0.6.1"}}}
+          toHandle:input.fileHandleForWriting];
+    [self send:@{@"method": @"initialized", @"params": @{}} toHandle:input.fileHandleForWriting];
+    [self send:@{@"method": @"account/rateLimits/read", @"id": @101} toHandle:input.fileHandleForWriting];
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSMutableData *buffer = [NSMutableData data];
+        while (task.running) {
+            NSData *chunk = output.fileHandleForReading.availableData;
+            if (chunk.length == 0) break;
+            [buffer appendData:chunk];
+            while (buffer.length > 0) {
+                const unsigned char *bytes = buffer.bytes;
+                NSUInteger newline = NSNotFound;
+                for (NSUInteger index = 0; index < buffer.length; index++) {
+                    if (bytes[index] == '\n') { newline = index; break; }
+                }
+                if (newline == NSNotFound) break;
+                NSData *line = [buffer subdataWithRange:NSMakeRange(0, newline)];
+                [buffer replaceBytesInRange:NSMakeRange(0, newline + 1) withBytes:NULL length:0];
+                NSDictionary *message = line.length > 0
+                    ? [NSJSONSerialization JSONObjectWithData:line options:0 error:nil]
+                    : nil;
+                if ([message isKindOfClass:NSDictionary.class]) [weakSelf handleMessage:message];
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf || strongSelf->_task != task) return;
+            strongSelf->_task = nil;
+            if (strongSelf->_shouldRun) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                    if (strongSelf->_shouldRun) [strongSelf start];
+                });
+            }
+        });
+    });
+}
+
+- (void)stop {
+    _shouldRun = NO;
+    if (_task.running) [_task terminate];
+    _task = nil;
 }
 @end
 
@@ -447,6 +705,7 @@ static NSError *QuotaError(NSString *message) {
 @property(nonatomic, copy) dispatch_block_t onQuit;
 - (void)setLoading;
 - (void)showSnapshot:(NSDictionary *)snapshot;
+- (void)updateQuotaObservation:(NSDictionary *)update;
 - (void)showError:(NSError *)error;
 @end
 
@@ -463,6 +722,7 @@ static NSError *QuotaError(NSString *message) {
     NSTextField *_percentLabel;
     QuotaProgressView *_progress;
     NSTextField *_usedLabel;
+    NSTextField *_todayQuotaLabel;
     NSTextField *_countdownLabel;
     NSTextField *_resetLabel;
     NSTextField *_creditsLabel;
@@ -480,83 +740,88 @@ static NSError *QuotaError(NSString *message) {
 }
 
 - (void)loadView {
-    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 360, 340)];
+    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 360, 360)];
     self.view.wantsLayer = YES;
     self.view.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.965 green:0.975 blue:0.988 alpha:1].CGColor;
 
     NSTextField *title = [self label:@"Codex 实际额度" size:16 weight:NSFontWeightSemibold color:QuotaText()];
-    title.frame = NSMakeRect(20, 300, 210, 24);
+    title.frame = NSMakeRect(20, 320, 210, 24);
     [self.view addSubview:title];
 
     NSButton *refresh = [NSButton buttonWithTitle:@"刷新" target:self action:@selector(refreshClicked:)];
     refresh.bezelStyle = NSBezelStyleInline;
-    refresh.frame = NSMakeRect(266, 298, 46, 26);
+    refresh.frame = NSMakeRect(266, 318, 46, 26);
     [self.view addSubview:refresh];
 
     NSButton *quit = [NSButton buttonWithTitle:@"退出" target:self action:@selector(quitClicked:)];
     quit.bezelStyle = NSBezelStyleInline;
-    quit.frame = NSMakeRect(310, 298, 42, 26);
+    quit.frame = NSMakeRect(310, 318, 42, 26);
     [self.view addSubview:quit];
 
     _accountLabel = [self label:@"正在读取账号…" size:11 weight:NSFontWeightRegular color:QuotaMuted()];
-    _accountLabel.frame = NSMakeRect(20, 273, 240, 18);
+    _accountLabel.frame = NSMakeRect(20, 293, 240, 18);
     [self.view addSubview:_accountLabel];
 
     _stateLabel = [self label:@"连接中" size:10 weight:NSFontWeightSemibold color:QuotaGreen()];
     _stateLabel.alignment = NSTextAlignmentRight;
-    _stateLabel.frame = NSMakeRect(270, 273, 70, 18);
+    _stateLabel.frame = NSMakeRect(270, 293, 70, 18);
     [self.view addSubview:_stateLabel];
 
     _todayTokensLabel = [self label:@"今日（本机实时）：正在读取…" size:11 weight:NSFontWeightSemibold color:QuotaText()];
-    _todayTokensLabel.frame = NSMakeRect(20, 247, 320, 18);
+    _todayTokensLabel.frame = NSMakeRect(20, 267, 320, 18);
     [self.view addSubview:_todayTokensLabel];
 
     _comparisonTokensLabel = [self label:@"昨日（官方）：正在读取…" size:11 weight:NSFontWeightRegular color:QuotaText()];
-    _comparisonTokensLabel.frame = NSMakeRect(20, 226, 320, 18);
+    _comparisonTokensLabel.frame = NSMakeRect(20, 246, 320, 18);
     [self.view addSubview:_comparisonTokensLabel];
 
     _cacheInfoButton = [NSButton buttonWithTitle:@"ⓘ" target:self action:@selector(cacheInfoClicked:)];
     _cacheInfoButton.bezelStyle = NSBezelStyleInline;
     _cacheInfoButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
     _cacheInfoButton.contentTintColor = QuotaYellow();
-    _cacheInfoButton.frame = NSMakeRect(136, 223, 26, 24);
+    _cacheInfoButton.frame = NSMakeRect(136, 243, 26, 24);
     _cacheInfoButton.toolTip = @"查看缓存数据说明";
     _cacheInfoButton.hidden = YES;
     [self.view addSubview:_cacheInfoButton];
 
     _cacheTimeLabel = [self label:@"" size:9 weight:NSFontWeightRegular color:QuotaYellow()];
-    _cacheTimeLabel.frame = NSMakeRect(160, 226, 180, 18);
+    _cacheTimeLabel.frame = NSMakeRect(160, 246, 180, 18);
     _cacheTimeLabel.hidden = YES;
     [self.view addSubview:_cacheTimeLabel];
 
     _weekTokensLabel = [self label:@"本周：正在读取…" size:11 weight:NSFontWeightRegular color:QuotaText()];
-    _weekTokensLabel.frame = NSMakeRect(20, 205, 320, 18);
+    _weekTokensLabel.frame = NSMakeRect(20, 225, 320, 18);
     [self.view addSubview:_weekTokensLabel];
 
     _monthTokensLabel = [self label:@"本月：正在读取…" size:11 weight:NSFontWeightRegular color:QuotaText()];
-    _monthTokensLabel.frame = NSMakeRect(20, 184, 320, 18);
+    _monthTokensLabel.frame = NSMakeRect(20, 204, 320, 18);
     [self.view addSubview:_monthTokensLabel];
 
     _windowLabel = [self label:@"周额度" size:14 weight:NSFontWeightSemibold color:QuotaText()];
-    _windowLabel.frame = NSMakeRect(20, 151, 150, 24);
+    _windowLabel.frame = NSMakeRect(20, 171, 150, 24);
     [self.view addSubview:_windowLabel];
 
     _percentLabel = [self label:@"--%" size:30 weight:NSFontWeightBold color:QuotaGreen()];
     _percentLabel.alignment = NSTextAlignmentRight;
-    _percentLabel.frame = NSMakeRect(210, 143, 130, 38);
+    _percentLabel.frame = NSMakeRect(210, 163, 130, 38);
     [self.view addSubview:_percentLabel];
 
-    _progress = [[QuotaProgressView alloc] initWithFrame:NSMakeRect(20, 126, 320, 12)];
+    _progress = [[QuotaProgressView alloc] initWithFrame:NSMakeRect(20, 146, 320, 12)];
     [self.view addSubview:_progress];
 
     _usedLabel = [self label:@"已用 --%" size:11 weight:NSFontWeightRegular color:QuotaMuted()];
-    _usedLabel.frame = NSMakeRect(20, 101, 120, 18);
+    _usedLabel.frame = NSMakeRect(20, 121, 120, 18);
     [self.view addSubview:_usedLabel];
 
     _countdownLabel = [self label:@"刷新倒计时 --" size:11 weight:NSFontWeightSemibold color:QuotaText()];
     _countdownLabel.alignment = NSTextAlignmentRight;
-    _countdownLabel.frame = NSMakeRect(140, 101, 200, 18);
+    _countdownLabel.frame = NSMakeRect(140, 121, 200, 18);
     [self.view addSubview:_countdownLabel];
+
+    _todayQuotaLabel = [self label:@"今日周额度消耗：正在累计…" size:11 weight:NSFontWeightSemibold color:QuotaText()];
+    _todayQuotaLabel.frame = NSMakeRect(20, 100, 320, 18);
+    _todayQuotaLabel.toolTip = @"累计官方周额度已用百分比的上涨量；滚动释放造成的下降不会扣减。";
+    [self.view addSubview:_todayQuotaLabel];
 
     NSBox *divider = [[NSBox alloc] initWithFrame:NSMakeRect(20, 87, 320, 1)];
     divider.boxType = NSBoxSeparator;
@@ -644,7 +909,7 @@ static NSError *QuotaError(NSString *message) {
     _todayTokensLabel.stringValue = [NSString stringWithFormat:@"今日（本机实时）：%@", [self formatTokensWan:snapshot[@"todayTokens"]]];
     BOOL officialIsCached = [snapshot[@"officialIsCached"] boolValue];
     _comparisonTokensLabel.textColor = officialIsCached ? QuotaYellow() : QuotaText();
-    _comparisonTokensLabel.frame = officialIsCached ? NSMakeRect(20, 226, 116, 18) : NSMakeRect(20, 226, 320, 18);
+    _comparisonTokensLabel.frame = officialIsCached ? NSMakeRect(20, 246, 116, 18) : NSMakeRect(20, 246, 320, 18);
     _comparisonTokensLabel.stringValue = officialIsCached
         ? [NSString stringWithFormat:@"%@：%@", snapshot[@"comparisonLabel"] ?: @"昨日", [self formatTokensWan:snapshot[@"comparisonTokens"]]]
         : [NSString stringWithFormat:@"%@（官方 · %@）：%@",
@@ -681,6 +946,10 @@ static NSError *QuotaError(NSString *message) {
     _percentLabel.textColor = remaining <= 10 ? QuotaRed() : QuotaGreen();
     _progress.value = remaining;
     _usedLabel.stringValue = [NSString stringWithFormat:@"已用 %@%%", [self formatNumber:used]];
+    NSNumber *todayQuotaUsed = snapshot[@"todayWeeklyQuotaUsed"];
+    _todayQuotaLabel.stringValue = [todayQuotaUsed isKindOfClass:NSNumber.class]
+        ? [NSString stringWithFormat:@"今日周额度消耗：约 %@%%", [self formatNumber:todayQuotaUsed.doubleValue]]
+        : @"今日周额度消耗：暂无数据";
 
     NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
     dateFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
@@ -696,6 +965,24 @@ static NSError *QuotaError(NSString *message) {
     timeFormatter.dateFormat = @"HH:mm:ss";
     _updatedLabel.stringValue = [NSString stringWithFormat:@"更新于 %@", [timeFormatter stringFromDate:snapshot[@"fetchedAt"]]];
     [self updateCountdown:nil];
+}
+
+- (void)updateQuotaObservation:(NSDictionary *)update {
+    NSNumber *todayQuotaUsed = update[@"todayWeeklyQuotaUsed"];
+    if ([todayQuotaUsed isKindOfClass:NSNumber.class]) {
+        _todayQuotaLabel.stringValue = [NSString stringWithFormat:@"今日周额度消耗：约 %@%%",
+                                         [self formatNumber:todayQuotaUsed.doubleValue]];
+    }
+    if (!_snapshot) return;
+    NSMutableDictionary *merged = [_snapshot mutableCopy];
+    [merged addEntriesFromDictionary:update];
+    NSNumber *currentUsed = update[@"currentUsed"];
+    if ([currentUsed isKindOfClass:NSNumber.class]) {
+        merged[@"used"] = currentUsed;
+        merged[@"remaining"] = @(100 - MAX(0, MIN(100, currentUsed.doubleValue)));
+    }
+    merged[@"fetchedAt"] = NSDate.date;
+    [self showSnapshot:merged];
 }
 
 - (void)showError:(NSError *)error {
@@ -739,12 +1026,16 @@ static NSError *QuotaError(NSString *message) {
     NSPopover *_popover;
     QuotaViewController *_controller;
     CodexQuotaClient *_client;
+    QuotaDailyUsageTracker *_tracker;
+    CodexQuotaObserver *_observer;
     BOOL _loading;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-    _client = [[CodexQuotaClient alloc] init];
+    _tracker = [[QuotaDailyUsageTracker alloc] init];
+    _client = [[CodexQuotaClient alloc] initWithTracker:_tracker];
+    _observer = [[CodexQuotaObserver alloc] initWithTracker:_tracker];
     _controller = [[QuotaViewController alloc] init];
     _statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
     _statusItem.button.title = @"C …";
@@ -754,7 +1045,7 @@ static NSError *QuotaError(NSString *message) {
     _statusItem.button.toolTip = @"Codex 实际额度";
 
     _popover = [[NSPopover alloc] init];
-    _popover.contentSize = NSMakeSize(360, 340);
+    _popover.contentSize = NSMakeSize(360, 360);
     _popover.behavior = NSPopoverBehaviorTransient;
     _popover.animates = YES;
     _popover.contentViewController = _controller;
@@ -762,12 +1053,26 @@ static NSError *QuotaError(NSString *message) {
     __weak typeof(self) weakSelf = self;
     _controller.onRefresh = ^{ [weakSelf refresh]; };
     _controller.onQuit = ^{ [NSApp terminate:nil]; };
+    _observer.onUpdate = ^(NSDictionary *update) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf->_controller updateQuotaObservation:update];
+        NSNumber *currentUsed = update[@"currentUsed"];
+        if ([currentUsed isKindOfClass:NSNumber.class]) {
+            strongSelf->_statusItem.button.title = [NSString stringWithFormat:@"C %.0f%%", 100 - currentUsed.doubleValue];
+        }
+    };
+    [_observer start];
 
     [self refresh];
     [NSTimer scheduledTimerWithTimeInterval:300 target:self selector:@selector(autoRefresh:) userInfo:nil repeats:YES];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [weakSelf showPopover];
     });
+}
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    [_observer stop];
 }
 
 - (void)autoRefresh:(NSTimer *)timer { [self refresh]; }

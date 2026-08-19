@@ -1,6 +1,6 @@
 ---
 name: codex-quota
-description: Read and display the user's real Codex usage limits, local real-time tokens for today, official prior-workday usage, weekly and monthly token statistics, weekly quota, remaining percentage, reset time, plan, credit balance, and available rate-limit reset credits in chat or a native macOS menu bar popover. Use when the user asks about Codex quota, today's tokens, yesterday's usage, weekly/monthly token statistics, usage allowance, weekly limits, remaining capacity, refresh/reset time, a quota menu bar item, or says 查看额度/今日Tokens/昨日用量/周统计/月统计/周额度/额度刷新/打开额度菜单栏.
+description: Read and display the user's real Codex usage limits, estimated weekly-quota consumption accumulated today, local real-time tokens for today, official prior-workday usage, weekly and monthly token statistics, weekly quota, remaining percentage, reset time, plan, credit balance, and available rate-limit reset credits in chat or a native macOS menu bar popover. Use when the user asks about Codex quota, today's weekly-quota consumption, today's tokens, yesterday's usage, weekly/monthly token statistics, usage allowance, weekly limits, remaining capacity, refresh/reset time, a quota menu bar item, or says 查看额度/今日周额度消耗/今日Tokens/昨日用量/周统计/月统计/周额度/额度刷新/打开额度菜单栏.
 ---
 
 # Codex Quota
@@ -93,6 +93,14 @@ the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
   numeric token counters. Never display, save, or inspect prompt or response
   contents.
 - Treat `usedPercent` as authoritative. Remaining percentage is `100-usedPercent`.
+- Estimate today's weekly-quota consumption by locally accumulating only positive
+  changes in the official weekly `usedPercent`. Do not subtract decreases caused
+  by rolling-window recovery. Listen for `account/rateLimits/updated` in the menu
+  app and retain the five-minute snapshot refresh as fallback. Persist only the
+  local date, numeric percentage snapshots, accumulated increase, and timestamps;
+  never persist authentication data. Label this daily result with `约`, reset it
+  on the next local calendar day, and explain that the first day begins when
+  tracking is enabled.
 - A weekly window is 10,080 minutes. Other returned windows must also be shown.
 - If Codex returns no weekly window, say so; do not invent one.
 - If the command is blocked from accessing local Codex state, retry it with a

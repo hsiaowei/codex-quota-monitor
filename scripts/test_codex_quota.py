@@ -57,6 +57,12 @@ FIXTURE = {
             {"startDate": "2026-08-10", "tokens": 45678},
         ],
     },
+    "todayWeeklyQuota": {
+        "usedPercent": 5,
+        "trackingStartedAt": 1786147200,
+        "lastObservedAt": 1786147200,
+        "isEstimate": True,
+    },
     "fetchedAt": 1786147200,
 }
 
@@ -75,6 +81,50 @@ class QuotaTests(unittest.TestCase):
         self.assertIn("ex*****@example.com", output)
         self.assertNotIn("example.user@example.com", output)
         self.assertIn("可用额度重置券：**1 次**", output)
+        self.assertIn("今日周额度消耗：**约 5%**", output)
+
+    def test_daily_weekly_quota_accumulates_only_positive_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = pathlib.Path(temp_dir) / "daily-quota.json"
+            first = datetime(2026, 8, 19, 8, tzinfo=timezone.utc)
+            result = MODULE.record_daily_weekly_quota_usage(20, now=first, cache_path=cache)
+            self.assertEqual(result["usedPercent"], 0)
+
+            result = MODULE.record_daily_weekly_quota_usage(
+                23, now=first.replace(hour=9), cache_path=cache
+            )
+            self.assertEqual(result["usedPercent"], 3)
+
+            result = MODULE.record_daily_weekly_quota_usage(
+                21, now=first.replace(hour=10), cache_path=cache
+            )
+            self.assertEqual(result["usedPercent"], 3)
+
+            result = MODULE.record_daily_weekly_quota_usage(
+                25, now=first.replace(hour=11), cache_path=cache
+            )
+            self.assertEqual(result["usedPercent"], 7)
+
+    def test_daily_weekly_quota_resets_on_next_local_day(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = pathlib.Path(temp_dir) / "daily-quota.json"
+            first = datetime(2026, 8, 19, 8, tzinfo=timezone.utc).astimezone()
+            MODULE.record_daily_weekly_quota_usage(20, now=first, cache_path=cache)
+            MODULE.record_daily_weekly_quota_usage(24, now=first.replace(hour=17), cache_path=cache)
+            next_day = first.replace(day=20, hour=8)
+            result = MODULE.record_daily_weekly_quota_usage(26, now=next_day, cache_path=cache)
+            self.assertEqual(result["usedPercent"], 0)
+            self.assertEqual(result["trackingStartedAt"], int(next_day.timestamp()))
+
+    def test_build_today_weekly_quota_requires_exact_week_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = pathlib.Path(temp_dir) / "daily-quota.json"
+            result = MODULE.build_today_weekly_quota_usage(FIXTURE["limits"], cache_path=cache)
+            self.assertIsNotNone(result)
+            limits = deepcopy(FIXTURE["limits"])
+            limits["rateLimits"]["primary"]["windowDurationMins"] = 300
+            limits["rateLimitsByLimitId"]["codex"]["primary"]["windowDurationMins"] = 300
+            self.assertIsNone(MODULE.build_today_weekly_quota_usage(limits, cache_path=cache))
 
     def test_extracts_official_tokens_from_exact_date_bucket(self):
         tokens = MODULE.extract_today_tokens(FIXTURE["usage"], day="2026-08-10")

@@ -18,9 +18,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CLIENT_VERSION = "0.5.1"
+CLIENT_VERSION = "0.6.1"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 CACHE_VERSION = 1
+DAILY_QUOTA_CACHE_VERSION = 1
 
 
 class QuotaError(RuntimeError):
@@ -269,6 +270,99 @@ def extract_official_daily_tokens(usage_result: Any) -> dict[date, int]:
 def official_usage_cache_path() -> Path:
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
     return codex_home / "codex-quota-monitor" / "official-usage-cache.json"
+
+
+def daily_weekly_quota_cache_path() -> Path:
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+    return codex_home / "codex-quota-monitor" / "daily-weekly-quota-cache.json"
+
+
+def _load_daily_weekly_quota_cache(cache_path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("version") != DAILY_QUOTA_CACHE_VERSION:
+        return {}
+    return payload
+
+
+def record_daily_weekly_quota_usage(
+    current_used_percent: float,
+    *,
+    now: datetime | None = None,
+    cache_path: Path | None = None,
+) -> dict[str, Any]:
+    """Accumulate positive official weekly used-percent changes for the local day."""
+    local_now = (now or datetime.now().astimezone()).astimezone()
+    observed_at = int(local_now.timestamp())
+    today = local_now.date().isoformat()
+    current = max(0.0, min(100.0, float(current_used_percent)))
+    target = cache_path or daily_weekly_quota_cache_path()
+    previous = _load_daily_weekly_quota_cache(target)
+
+    same_day = previous.get("day") == today
+    raw_accumulated = previous.get("accumulatedIncreasePercent") if same_day else None
+    raw_last = previous.get("lastUsedPercent") if same_day else None
+    raw_started = previous.get("trackingStartedAt") if same_day else None
+    accumulated = (
+        max(0.0, float(raw_accumulated))
+        if isinstance(raw_accumulated, (int, float)) and not isinstance(raw_accumulated, bool)
+        else 0.0
+    )
+    last = (
+        max(0.0, min(100.0, float(raw_last)))
+        if isinstance(raw_last, (int, float)) and not isinstance(raw_last, bool)
+        else None
+    )
+    started_at = (
+        int(raw_started)
+        if isinstance(raw_started, (int, float)) and not isinstance(raw_started, bool)
+        else observed_at
+    )
+    if last is not None and current > last:
+        accumulated += current - last
+
+    payload = {
+        "version": DAILY_QUOTA_CACHE_VERSION,
+        "day": today,
+        "trackingStartedAt": started_at,
+        "lastObservedAt": observed_at,
+        "lastUsedPercent": current,
+        "accumulatedIncreasePercent": accumulated,
+    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        pass
+    return {
+        "usedPercent": accumulated,
+        "trackingStartedAt": started_at,
+        "lastObservedAt": observed_at,
+        "source": "official_weekly_used_percent_changes",
+        "isEstimate": True,
+    }
+
+
+def build_today_weekly_quota_usage(
+    limits_result: Any,
+    *,
+    now: datetime | None = None,
+    cache_path: Path | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(limits_result, dict):
+        return None
+    weekly = next((window for window in extract_windows(limits_result) if window.duration_minutes == 10_080), None)
+    if weekly is None:
+        return None
+    return record_daily_weekly_quota_usage(
+        weekly.used_percent,
+        now=now,
+        cache_path=cache_path,
+    )
 
 
 def _load_official_usage_cache(cache_path: Path) -> tuple[dict[date, int], int | None]:
@@ -526,11 +620,19 @@ def render_markdown(data: dict[str, Any], show_email: bool = False) -> str:
     week_official_value = _format_tokens_wan(week_official_tokens) if isinstance(week_official_tokens, int) else "暂无数据"
     month_official_value = _format_tokens_wan(month_official_tokens) if isinstance(month_official_tokens, int) else "暂无数据"
     today_value = _format_tokens_wan(today_tokens) if isinstance(today_tokens, int) else "暂无数据"
+    today_weekly_quota = data.get("todayWeeklyQuota")
+    today_weekly_used = today_weekly_quota.get("usedPercent") if isinstance(today_weekly_quota, dict) else None
+    today_weekly_line = (
+        f"今日周额度消耗：**约 {_format_percent(float(today_weekly_used))}%**"
+        if isinstance(today_weekly_used, (int, float)) and not isinstance(today_weekly_used, bool)
+        else "今日周额度消耗：**暂无数据**"
+    )
     lines = [
         "## Codex 实际额度",
         "",
         f"账号：{account_label}　|　套餐：{plan}",
         f"今日 Tokens（本机实时）：**{_format_tokens_wan(today_tokens)}**" if isinstance(today_tokens, int) else "今日 Tokens（本机实时）：**暂无数据**",
+        today_weekly_line,
         f"{comparison_label} Tokens（官方 · {comparison_date}）：**{official_marker}{comparison_value}**{cache_suffix}",
         f"本周 Tokens：**{official_marker}{week_official_value}（官方历史） + {today_value}（今日实时）**",
         f"本月 Tokens：**{official_marker}{month_official_value}（官方历史） + {today_value}（今日实时）**",
@@ -572,7 +674,7 @@ def render_markdown(data: dict[str, Any], show_email: bool = False) -> str:
             "",
             f"数据获取时间：{fetched:%Y-%m-%d %H:%M:%S} {fetched.tzname() or '本地时间'}",
             "",
-            "> 今日 Tokens 来自本机 Codex 会话的实时 token 事件；对比日来自官方每日活动桶。本周和本月为“官方历史 + 本机今日”，不包含其他设备尚未回传的当日数据。",
+            "> 今日 Tokens 来自本机 Codex 会话的实时 token 事件；今日周额度消耗累计官方周额度百分比的上涨量，滚动释放造成的下降不扣减，因此标记为“约”。对比日来自官方每日活动桶。本周和本月为“官方历史 + 本机今日”，不包含其他设备尚未回传的当日数据。",
         ]
     )
     return "\n".join(lines)
@@ -596,6 +698,10 @@ def main() -> int:
     try:
         data = fetch_live_data(max(1.0, args.timeout))
         data["usageStats"] = build_usage_stats(data.get("usage"), cache_path=official_usage_cache_path())
+        data["todayWeeklyQuota"] = build_today_weekly_quota_usage(
+            data.get("limits"),
+            cache_path=daily_weekly_quota_cache_path(),
+        )
         if args.json:
             print(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
         else:
