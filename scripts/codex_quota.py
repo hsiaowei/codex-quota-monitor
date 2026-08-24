@@ -18,10 +18,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CLIENT_VERSION = "0.6.1"
+CLIENT_VERSION = "0.6.2"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 CACHE_VERSION = 1
 DAILY_QUOTA_CACHE_VERSION = 1
+LOCAL_TOKEN_CACHE_VERSION = 1
 
 
 class QuotaError(RuntimeError):
@@ -277,6 +278,11 @@ def daily_weekly_quota_cache_path() -> Path:
     return codex_home / "codex-quota-monitor" / "daily-weekly-quota-cache.json"
 
 
+def local_token_cache_path() -> Path:
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+    return codex_home / "codex-quota-monitor" / "daily-local-token-cache.json"
+
+
 def _load_daily_weekly_quota_cache(cache_path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -441,43 +447,159 @@ def _parse_event_datetime(value: Any) -> datetime | None:
     return parsed.astimezone()
 
 
-def read_local_tokens_for_day(target: date, sessions_root: Path | None = None) -> int | None:
-    """Sum per-call token deltas from local Codex session events for one local day."""
+def _load_local_token_cache(cache_path: Path, target: date) -> tuple[dict[str, int], dict[str, int]]:
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}, {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != LOCAL_TOKEN_CACHE_VERSION
+        or payload.get("day") != target.isoformat()
+    ):
+        return {}, {}
+    raw_sessions = payload.get("sessionTokens")
+    if not isinstance(raw_sessions, dict):
+        return {}, {}
+    session_tokens = {
+        str(session_id): max(0, int(tokens))
+        for session_id, tokens in raw_sessions.items()
+        if isinstance(session_id, str)
+        and not isinstance(tokens, bool)
+        and isinstance(tokens, (int, float))
+    }
+    raw_cumulative = payload.get("sessionCumulativeTokens")
+    session_cumulative = {
+        str(session_id): max(0, int(tokens))
+        for session_id, tokens in raw_cumulative.items()
+        if isinstance(session_id, str)
+        and not isinstance(tokens, bool)
+        and isinstance(tokens, (int, float))
+    } if isinstance(raw_cumulative, dict) else {}
+    return session_tokens, session_cumulative
+
+
+def _save_local_token_cache(
+    cache_path: Path,
+    target: date,
+    session_tokens: dict[str, int],
+    session_cumulative: dict[str, int],
+) -> None:
+    payload = {
+        "version": LOCAL_TOKEN_CACHE_VERSION,
+        "day": target.isoformat(),
+        "updatedAt": int(time.time()),
+        "sessionTokens": dict(sorted(session_tokens.items())),
+        "sessionCumulativeTokens": dict(sorted(session_cumulative.items())),
+    }
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(temporary, cache_path)
+    except OSError:
+        pass
+
+
+def read_local_tokens_for_day(
+    target: date,
+    sessions_root: Path | None = None,
+    *,
+    archived_sessions_root: Path | None = None,
+    cache_path: Path | None = None,
+) -> int | None:
+    """Sum local token events without losing completed sessions across a Codex restart."""
     if sessions_root is None:
         codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
         sessions_root = codex_home / "sessions"
-    if not sessions_root.is_dir():
+        archived_sessions_root = codex_home / "archived_sessions"
+        if cache_path is None:
+            cache_path = local_token_cache_path()
+
+    roots = [sessions_root]
+    if archived_sessions_root is not None:
+        roots.append(archived_sessions_root)
+    roots = [root for index, root in enumerate(roots) if root not in roots[:index]]
+    found_root = any(root.is_dir() for root in roots)
+    if not found_root and cache_path is None:
         return None
 
     day_start = datetime.combine(target, datetime_time.min).astimezone()
-    total = 0
-    for path in sessions_root.rglob("*.jsonl"):
-        try:
-            if path.stat().st_mtime < day_start.timestamp():
-                continue
-            with path.open("r", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(record, dict) or record.get("type") != "event_msg":
-                        continue
-                    event_time = _parse_event_datetime(record.get("timestamp"))
-                    if event_time is None or event_time.date() != target:
-                        continue
-                    payload = record.get("payload")
-                    if not isinstance(payload, dict) or payload.get("type") != "token_count":
-                        continue
-                    info = payload.get("info")
-                    last = info.get("last_token_usage") if isinstance(info, dict) else None
-                    tokens = last.get("total_tokens") if isinstance(last, dict) else None
-                    if isinstance(tokens, bool) or not isinstance(tokens, (int, float)):
-                        continue
-                    total += max(0, int(tokens))
-        except OSError:
+    session_tokens: dict[str, int] = {}
+    session_cumulative: dict[str, int] = {}
+    seen_events: set[tuple[str, str, int]] = set()
+    for root in roots:
+        if not root.is_dir():
             continue
-    return total
+        for path in root.rglob("*.jsonl"):
+            try:
+                if path.stat().st_mtime < day_start.timestamp():
+                    continue
+                session_id = path.name
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    for line in handle:
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(record, dict) or record.get("type") != "event_msg":
+                            continue
+                        raw_timestamp = record.get("timestamp")
+                        event_time = _parse_event_datetime(raw_timestamp)
+                        if event_time is None or event_time.date() != target:
+                            continue
+                        payload = record.get("payload")
+                        if not isinstance(payload, dict) or payload.get("type") != "token_count":
+                            continue
+                        info = payload.get("info")
+                        last = info.get("last_token_usage") if isinstance(info, dict) else None
+                        tokens = last.get("total_tokens") if isinstance(last, dict) else None
+                        if isinstance(tokens, bool) or not isinstance(tokens, (int, float)):
+                            continue
+                        amount = max(0, int(tokens))
+                        event_key = (session_id, str(raw_timestamp), amount)
+                        if event_key in seen_events:
+                            continue
+                        seen_events.add(event_key)
+                        session_tokens[session_id] = session_tokens.get(session_id, 0) + amount
+                        cumulative = info.get("total_token_usage") if isinstance(info, dict) else None
+                        cumulative_tokens = cumulative.get("total_tokens") if isinstance(cumulative, dict) else None
+                        if (
+                            not isinstance(cumulative_tokens, bool)
+                            and isinstance(cumulative_tokens, (int, float))
+                        ):
+                            session_cumulative[session_id] = max(
+                                session_cumulative.get(session_id, 0),
+                                max(0, int(cumulative_tokens)),
+                            )
+            except OSError:
+                continue
+
+    if cache_path is not None:
+        cached_tokens, cached_cumulative = _load_local_token_cache(cache_path, target)
+        for session_id in cached_tokens.keys() | session_tokens.keys():
+            previous_tokens = cached_tokens.get(session_id, 0)
+            previous_cumulative = cached_cumulative.get(session_id)
+            current_cumulative = session_cumulative.get(session_id)
+            cumulative_growth = (
+                max(0, current_cumulative - previous_cumulative)
+                if current_cumulative is not None and previous_cumulative is not None
+                else 0
+            )
+            session_tokens[session_id] = max(
+                session_tokens.get(session_id, 0),
+                previous_tokens + cumulative_growth,
+            )
+        for session_id, previous_cumulative in cached_cumulative.items():
+            session_cumulative[session_id] = max(
+                session_cumulative.get(session_id, 0),
+                previous_cumulative,
+            )
+        _save_local_token_cache(cache_path, target, session_tokens, session_cumulative)
+
+    if not found_root and not session_tokens:
+        return None
+    return sum(session_tokens.values())
 
 
 def previous_reporting_day(today: date) -> tuple[date, bool]:

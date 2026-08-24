@@ -292,7 +292,7 @@ python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --rebui
 
 ### 今日 Tokens
 
-从这台 Mac 的本机 Codex 会话 Token 数值事件实时累计，不包含其他电脑、网页端或尚未同步的云端任务。
+从这台 Mac 的本机 Codex 活动会话与归档会话 Token 数值事件实时累计，不包含其他电脑、网页端或尚未同步的云端任务。插件会对跨目录的同一事件去重，并把当天每个会话已观察到的最大数值累计和累计计数检查点保存在 `~/.codex/codex-quota-monitor/daily-local-token-cache.json`。因此 Codex 升级或重启导致会话文件被迁移、截断、归档或暂时不可见时，今日数值不会回退，恢复后的新增用量也会继续累加；缓存只包含本地日期、会话文件名、Token 数值和更新时间，不包含对话内容或登录信息。
 
 ### 今日周额度消耗
 

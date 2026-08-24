@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("codex_quota.py")
@@ -156,6 +157,62 @@ class QuotaTests(unittest.TestCase):
             log.write_text("\n".join(__import__("json").dumps(item) for item in records) + "\n", encoding="utf-8")
             tokens = MODULE.read_local_tokens_for_day(datetime(2026, 8, 10, tzinfo=timezone.utc).astimezone().date(), sessions)
             self.assertEqual(tokens, 45474)
+
+    def test_default_scan_includes_archived_sessions_and_deduplicates_moved_events(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_home = pathlib.Path(temp_dir)
+            sessions = codex_home / "sessions"
+            archived = codex_home / "archived_sessions"
+            sessions.mkdir()
+            archived.mkdir()
+            shared = '{"timestamp":"2026-08-10T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":25000}}}}\n'
+            (sessions / "rollout-shared.jsonl").write_text(shared, encoding="utf-8")
+            (archived / "rollout-shared.jsonl").write_text(shared, encoding="utf-8")
+            (archived / "rollout-archived.jsonl").write_text(
+                '{"timestamp":"2026-08-10T03:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":20474}}}}\n',
+                encoding="utf-8",
+            )
+            target = datetime(2026, 8, 10, tzinfo=timezone.utc).astimezone().date()
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}):
+                tokens = MODULE.read_local_tokens_for_day(target)
+            self.assertEqual(tokens, 45474)
+
+    def test_local_token_cache_survives_session_disappearing_after_restart(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            cache = root / "daily-local-token-cache.json"
+            log = sessions / "rollout-before-restart.jsonl"
+            log.write_text(
+                '{"timestamp":"2026-08-10T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":50000}}}}\n',
+                encoding="utf-8",
+            )
+            target = datetime(2026, 8, 10, tzinfo=timezone.utc).astimezone().date()
+            before = MODULE.read_local_tokens_for_day(target, sessions, cache_path=cache)
+            log.unlink()
+            after = MODULE.read_local_tokens_for_day(target, sessions, cache_path=cache)
+            self.assertEqual(before, 50000)
+            self.assertEqual(after, 50000)
+
+    def test_local_token_cache_adds_cumulative_growth_after_log_truncation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            cache = root / "daily-local-token-cache.json"
+            log = sessions / "rollout-resumed.jsonl"
+            log.write_text(
+                '{"timestamp":"2026-08-10T02:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":50000},"total_token_usage":{"total_tokens":100000}}}}\n',
+                encoding="utf-8",
+            )
+            target = datetime(2026, 8, 10, tzinfo=timezone.utc).astimezone().date()
+            self.assertEqual(MODULE.read_local_tokens_for_day(target, sessions, cache_path=cache), 50000)
+            log.write_text(
+                '{"timestamp":"2026-08-10T03:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":20000},"total_token_usage":{"total_tokens":120000}}}}\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(MODULE.read_local_tokens_for_day(target, sessions, cache_path=cache), 70000)
 
     def test_weekend_comparison_falls_back_to_friday(self):
         target, fallback = MODULE.previous_reporting_day(datetime(2026, 8, 10).date())

@@ -201,6 +201,57 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
             stringByAppendingPathComponent:@"official-usage-cache.json"];
 }
 
+- (NSString *)localTokenCachePath {
+    return [[QuotaCodexHome() stringByAppendingPathComponent:@"codex-quota-monitor"]
+            stringByAppendingPathComponent:@"daily-local-token-cache.json"];
+}
+
+- (NSDictionary *)loadLocalTokenCacheForDate:(NSDate *)targetDate {
+    NSData *data = [NSData dataWithContentsOfFile:[self localTokenCachePath]];
+    NSDictionary *payload = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSString *targetDay = [QuotaDayFormatter() stringFromDate:targetDate];
+    NSDictionary *rawSessions = [payload isKindOfClass:NSDictionary.class] ? payload[@"sessionTokens"] : nil;
+    if ([payload[@"version"] integerValue] != 1 || ![payload[@"day"] isEqual:targetDay] ||
+        ![rawSessions isKindOfClass:NSDictionary.class]) return @{};
+    NSMutableDictionary<NSString *, NSNumber *> *sessions = [NSMutableDictionary dictionary];
+    for (id sessionID in rawSessions) {
+        id tokens = rawSessions[sessionID];
+        if ([sessionID isKindOfClass:NSString.class] && [tokens isKindOfClass:NSNumber.class]) {
+            sessions[sessionID] = @(MAX(0, [tokens longLongValue]));
+        }
+    }
+    NSDictionary *rawCumulative = payload[@"sessionCumulativeTokens"];
+    NSMutableDictionary<NSString *, NSNumber *> *cumulative = [NSMutableDictionary dictionary];
+    if ([rawCumulative isKindOfClass:NSDictionary.class]) {
+        for (id sessionID in rawCumulative) {
+            id tokens = rawCumulative[sessionID];
+            if ([sessionID isKindOfClass:NSString.class] && [tokens isKindOfClass:NSNumber.class]) {
+                cumulative[sessionID] = @(MAX(0, [tokens longLongValue]));
+            }
+        }
+    }
+    return @{@"sessionTokens": sessions, @"sessionCumulativeTokens": cumulative};
+}
+
+- (void)saveLocalTokenCache:(NSDictionary<NSString *, NSNumber *> *)sessions
+                  cumulative:(NSDictionary<NSString *, NSNumber *> *)cumulative
+                     forDate:(NSDate *)targetDate {
+    NSString *path = [self localTokenCachePath];
+    [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+    NSDictionary *payload = @{
+        @"version": @1,
+        @"day": [QuotaDayFormatter() stringFromDate:targetDate],
+        @"updatedAt": @((long long)NSDate.date.timeIntervalSince1970),
+        @"sessionTokens": sessions,
+        @"sessionCumulativeTokens": cumulative
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+    if (data) [data writeToFile:path options:NSDataWritingAtomic error:nil];
+}
+
 - (NSMutableDictionary<NSString *, NSNumber *> *)officialDailyUsage:(NSDictionary *)usageResult {
     NSMutableDictionary<NSString *, NSNumber *> *official = [NSMutableDictionary dictionary];
     NSArray *dailyBuckets = usageResult[@"dailyUsageBuckets"];
@@ -260,43 +311,93 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
 }
 
 - (NSNumber *)localTokensForDate:(NSDate *)targetDate {
-    NSURL *sessionsURL = [NSURL fileURLWithPath:[QuotaCodexHome() stringByAppendingPathComponent:@"sessions"] isDirectory:YES];
     NSFileManager *manager = NSFileManager.defaultManager;
-    BOOL isDirectory = NO;
-    if (![manager fileExistsAtPath:sessionsURL.path isDirectory:&isDirectory] || !isDirectory) return nil;
-
     NSCalendar *calendar = NSCalendar.currentCalendar;
     NSDate *dayStart = [calendar startOfDayForDate:targetDate];
     NSArray *keys = @[NSURLContentModificationDateKey, NSURLIsRegularFileKey];
-    NSDirectoryEnumerator<NSURL *> *files = [manager enumeratorAtURL:sessionsURL
-                                         includingPropertiesForKeys:keys
-                                                            options:NSDirectoryEnumerationSkipsHiddenFiles
-                                                       errorHandler:^BOOL(NSURL *url, NSError *scanError) { return YES; }];
-    __block long long total = 0;
-    for (NSURL *fileURL in files) {
-        if (![[fileURL.pathExtension lowercaseString] isEqualToString:@"jsonl"]) continue;
-        NSNumber *regular = nil;
-        NSDate *modified = nil;
-        [fileURL getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
-        [fileURL getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
-        if (!regular.boolValue || (modified && [modified compare:dayStart] == NSOrderedAscending)) continue;
+    NSDictionary *cachedState = [self loadLocalTokenCacheForDate:targetDate];
+    NSDictionary<NSString *, NSNumber *> *cachedTokens = cachedState[@"sessionTokens"] ?: @{};
+    NSDictionary<NSString *, NSNumber *> *cachedCumulative = cachedState[@"sessionCumulativeTokens"] ?: @{};
+    NSMutableDictionary<NSString *, NSNumber *> *sessionTokens = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSNumber *> *sessionCumulative = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSNumber *> *scannedTokens = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSNumber *> *scannedCumulative = [NSMutableDictionary dictionary];
+    NSMutableSet<NSString *> *seenEvents = [NSMutableSet set];
+    NSArray<NSString *> *rootNames = @[@"sessions", @"archived_sessions"];
+    BOOL foundRoot = NO;
+    for (NSString *rootName in rootNames) {
+        NSURL *rootURL = [NSURL fileURLWithPath:[QuotaCodexHome() stringByAppendingPathComponent:rootName]
+                                    isDirectory:YES];
+        BOOL isDirectory = NO;
+        if (![manager fileExistsAtPath:rootURL.path isDirectory:&isDirectory] || !isDirectory) continue;
+        foundRoot = YES;
+        NSDirectoryEnumerator<NSURL *> *files = [manager enumeratorAtURL:rootURL
+                                             includingPropertiesForKeys:keys
+                                                                options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                           errorHandler:^BOOL(NSURL *url, NSError *scanError) { return YES; }];
+        for (NSURL *fileURL in files) {
+            if (![[fileURL.pathExtension lowercaseString] isEqualToString:@"jsonl"]) continue;
+            NSNumber *regular = nil;
+            NSDate *modified = nil;
+            [fileURL getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+            [fileURL getResourceValue:&modified forKey:NSURLContentModificationDateKey error:nil];
+            if (!regular.boolValue || (modified && [modified compare:dayStart] == NSOrderedAscending)) continue;
 
-        NSString *contents = [NSString stringWithContentsOfURL:fileURL encoding:NSUTF8StringEncoding error:nil];
-        if (!contents) continue;
-        [contents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
-            NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
-            NSDictionary *record = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-            if (![record isKindOfClass:NSDictionary.class] || ![record[@"type"] isEqual:@"event_msg"]) return;
-            NSDate *eventDate = [self eventDate:record[@"timestamp"]];
-            if (!eventDate || ![calendar isDate:eventDate inSameDayAsDate:targetDate]) return;
-            NSDictionary *payload = record[@"payload"];
-            if (![payload isKindOfClass:NSDictionary.class] || ![payload[@"type"] isEqual:@"token_count"]) return;
-            NSDictionary *info = payload[@"info"];
-            NSDictionary *last = [info isKindOfClass:NSDictionary.class] ? info[@"last_token_usage"] : nil;
-            NSNumber *tokens = [last isKindOfClass:NSDictionary.class] ? last[@"total_tokens"] : nil;
-            if ([tokens isKindOfClass:NSNumber.class]) total += MAX(0, tokens.longLongValue);
-        }];
+            NSString *sessionID = fileURL.lastPathComponent;
+            NSString *contents = [NSString stringWithContentsOfURL:fileURL encoding:NSUTF8StringEncoding error:nil];
+            if (!contents) continue;
+            [contents enumerateLinesUsingBlock:^(NSString *line, BOOL *stop) {
+                NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+                NSDictionary *record = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+                if (![record isKindOfClass:NSDictionary.class] || ![record[@"type"] isEqual:@"event_msg"]) return;
+                NSString *rawTimestamp = record[@"timestamp"];
+                NSDate *eventDate = [self eventDate:rawTimestamp];
+                if (!eventDate || ![calendar isDate:eventDate inSameDayAsDate:targetDate]) return;
+                NSDictionary *payload = record[@"payload"];
+                if (![payload isKindOfClass:NSDictionary.class] || ![payload[@"type"] isEqual:@"token_count"]) return;
+                NSDictionary *info = payload[@"info"];
+                NSDictionary *last = [info isKindOfClass:NSDictionary.class] ? info[@"last_token_usage"] : nil;
+                NSNumber *tokens = [last isKindOfClass:NSDictionary.class] ? last[@"total_tokens"] : nil;
+                if (![tokens isKindOfClass:NSNumber.class]) return;
+                long long amount = MAX(0, tokens.longLongValue);
+                NSString *eventKey = [NSString stringWithFormat:@"%@|%@|%lld", sessionID, rawTimestamp, amount];
+                if ([seenEvents containsObject:eventKey]) return;
+                [seenEvents addObject:eventKey];
+                scannedTokens[sessionID] = @(scannedTokens[sessionID].longLongValue + amount);
+                NSDictionary *cumulative = [info isKindOfClass:NSDictionary.class] ? info[@"total_token_usage"] : nil;
+                NSNumber *cumulativeTokens = [cumulative isKindOfClass:NSDictionary.class]
+                    ? cumulative[@"total_tokens"]
+                    : nil;
+                if ([cumulativeTokens isKindOfClass:NSNumber.class]) {
+                    scannedCumulative[sessionID] = @(MAX(scannedCumulative[sessionID].longLongValue,
+                                                         MAX(0, cumulativeTokens.longLongValue)));
+                }
+            }];
+        }
     }
+    NSMutableSet<NSString *> *sessionIDs = [NSMutableSet setWithArray:cachedTokens.allKeys];
+    [sessionIDs addObjectsFromArray:scannedTokens.allKeys];
+    for (NSString *sessionID in sessionIDs) {
+        long long previousTokens = cachedTokens[sessionID].longLongValue;
+        NSNumber *previousCumulative = cachedCumulative[sessionID];
+        NSNumber *currentCumulative = scannedCumulative[sessionID];
+        long long growth = previousCumulative && currentCumulative
+            ? MAX(0, currentCumulative.longLongValue - previousCumulative.longLongValue)
+            : 0;
+        sessionTokens[sessionID] = @(MAX(scannedTokens[sessionID].longLongValue,
+                                         previousTokens + growth));
+    }
+    [sessionCumulative addEntriesFromDictionary:cachedCumulative];
+    for (NSString *sessionID in scannedCumulative) {
+        sessionCumulative[sessionID] = @(MAX(sessionCumulative[sessionID].longLongValue,
+                                             scannedCumulative[sessionID].longLongValue));
+    }
+    if (foundRoot || sessionTokens.count > 0) {
+        [self saveLocalTokenCache:sessionTokens cumulative:sessionCumulative forDate:targetDate];
+    }
+    if (!foundRoot && sessionTokens.count == 0) return nil;
+    long long total = 0;
+    for (NSNumber *tokens in sessionTokens.allValues) total += MAX(0, tokens.longLongValue);
     return @(total);
 }
 
@@ -398,7 +499,7 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"0.6.1"}}},
+                                           @"version": @"0.6.2"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -632,7 +733,7 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     [self send:@{@"method": @"initialize", @"id": @100,
                  @"params": @{@"clientInfo": @{@"name": @"codex_quota_observer",
                                                    @"title": @"Codex Quota Observer",
-                                                   @"version": @"0.6.1"}}}
+                                                   @"version": @"0.6.2"}}}
           toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"initialized", @"params": @{}} toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"account/rateLimits/read", @"id": @101} toHandle:input.fileHandleForWriting];

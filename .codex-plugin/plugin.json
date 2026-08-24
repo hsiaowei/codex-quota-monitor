@@ -1,6 +1,6 @@
 {
   "name": "codex-quota-monitor",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Display real Codex quota, estimated daily weekly-quota consumption, local real-time tokens, official prior-workday usage, weekly/monthly statistics, and reset times.",
   "author": {
     "name": "hsiaowei"

@@ -64,9 +64,15 @@ the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
 - The app-server owns authentication and returns only account metadata and quota
   state needed for the report.
 - Prefer `rateLimitsByLimitId` when present; the script handles this selection.
-- Read today's tokens from local `token_count` session events and sum only
+- Read today's tokens from both active and archived local `token_count` session
+  events, deduplicate events that appear in both locations, and sum only
   `last_token_usage.total_tokens` whose event timestamp is on the current local
-  calendar day. This is a local-device total, not an account-wide estimate.
+  calendar day. Preserve each session's largest observed daily numeric total in
+  the local daily cache so a Codex update or restart cannot make today's value
+  go backwards when a session file is moved, truncated, or temporarily
+  unavailable. Use numeric cumulative-token checkpoints to add later growth if
+  a resumed session log contains only the post-restart segment. This is a
+  local-device total, not an account-wide estimate.
 - Read the comparison day from the exact official `dailyUsageBuckets` date. If
   yesterday is Saturday or Sunday, use the preceding Friday. If that exact
   official bucket is missing, display `暂无数据`; never turn a missing bucket into
@@ -90,8 +96,9 @@ the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
   round-half-up behavior. Omit the `万` portion when its rounded remainder is
   zero, so 200,000,000 displays as `2亿`, not `2亿0.0万`.
 - Local session files may be parsed only for event timestamps, event types, and
-  numeric token counters. Never display, save, or inspect prompt or response
-  contents.
+  numeric token counters. The daily local cache may contain only the local date,
+  session filename, numeric Token totals/cumulative checkpoints, and update
+  timestamp. Never display, save, or inspect prompt or response contents.
 - Treat `usedPercent` as authoritative. Remaining percentage is `100-usedPercent`.
 - Estimate today's weekly-quota consumption by locally accumulating only positive
   changes in the official weekly `usedPercent`. Do not subtract decreases caused
