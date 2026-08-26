@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 
 MODULE_PATH = pathlib.Path(__file__).with_name("codex_quota.py")
+CODEX_USE_PATH = pathlib.Path(__file__).with_name("codex-use.sh")
 SPEC = importlib.util.spec_from_file_location("codex_quota", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
@@ -69,6 +71,25 @@ FIXTURE = {
 
 
 class QuotaTests(unittest.TestCase):
+    def test_codex_use_version_reports_plugin_and_app_versions(self):
+        result = subprocess.run(
+            ["/bin/sh", str(CODEX_USE_PATH), "version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("codex-quota-monitor 0.7.3", result.stdout)
+        self.assertIn("CodexQuotaMenu 0.7.3 (build 11)", result.stdout)
+
+    def test_codex_use_help_lists_version_command(self):
+        result = subprocess.run(
+            ["/bin/sh", str(CODEX_USE_PATH), "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("version", result.stdout)
+
     def test_extracts_weekly_window(self):
         windows = MODULE.extract_windows(FIXTURE["limits"])
         self.assertEqual(len(windows), 1)
@@ -90,6 +111,73 @@ class QuotaTests(unittest.TestCase):
         self.assertIn("### 5 小时额度", output)
         self.assertIn("剩余 75%", output)
         self.assertIn("已用 25%", output)
+
+    def test_only_codex_bucket_is_used_when_reserve_bucket_has_same_windows(self):
+        data = deepcopy(FIXTURE)
+        data["limits"]["rateLimitsByLimitId"] = {
+            "gpt-reserve": {
+                "limitId": "gpt-reserve",
+                "limitName": "base_model_inference",
+                "primary": {
+                    "usedPercent": 0,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1786324692,
+                },
+                "secondary": {
+                    "usedPercent": 0,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1786149000,
+                },
+            },
+            "codex": {
+                "limitId": "codex",
+                "primary": {
+                    "usedPercent": 8,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1786324692,
+                },
+                "secondary": {
+                    "usedPercent": 25,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1786149000,
+                },
+            },
+        }
+        windows = MODULE.extract_windows(data["limits"])
+        self.assertEqual({window.limit_id for window in windows}, {"codex"})
+        weekly = next(window for window in windows if window.duration_minutes == 10080)
+        five_hour = next(window for window in windows if window.duration_minutes == 300)
+        self.assertEqual(weekly.remaining_percent, 92)
+        self.assertEqual(five_hour.remaining_percent, 75)
+        output = MODULE.render_markdown(data)
+        self.assertEqual(output.count("### 周额度"), 1)
+        self.assertEqual(output.count("### 5 小时额度"), 1)
+        self.assertNotIn("gpt-reserve", output)
+        self.assertNotIn("base_model_inference", output)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tracked = MODULE.build_today_weekly_quota_usage(
+                data["limits"], cache_path=pathlib.Path(temp_dir) / "daily-quota.json"
+            )
+            self.assertIsNotNone(tracked)
+            self.assertEqual(tracked["usedPercent"], 0)
+
+    def test_top_level_codex_rate_limits_remain_supported(self):
+        limits = deepcopy(FIXTURE["limits"])
+        limits["rateLimitsByLimitId"] = {
+            "gpt-reserve": {
+                "limitId": "gpt-reserve",
+                "primary": {
+                    "usedPercent": 0,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1786324692,
+                },
+            }
+        }
+        limits["rateLimits"].pop("limitId", None)
+        windows = MODULE.extract_windows(limits)
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].limit_id, "codex")
+        self.assertEqual(windows[0].remaining_percent, 6)
 
     def test_markdown_uses_real_percent_and_masks_email(self):
         output = MODULE.render_markdown(FIXTURE)

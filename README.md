@@ -10,6 +10,7 @@
 ## 1. 功能
 
 - Codex 5 小时额度与周额度的剩余百分比、已用百分比、刷新时间和倒计时
+- 固定选择官方 `codex` 额度桶，忽略 `gpt-reserve/base_model_inference` 等备用桶
 - 今日消耗（周额度）：实时累计官方周额度 `usedPercent` 的上涨量
 - 今日 Tokens：根据这台 Mac 的本机 Codex 会话实时累计
 - 昨日官方 Tokens；如果昨日是周六或周日，则显示上周五
@@ -117,9 +118,10 @@ sudo ln -s "$HOME/Workspace/codex-quota-monitor/scripts/codex-use.sh" /usr/local
 ```bash
 command -v codex-use
 codex-use --help
+codex-use version
 ```
 
-正常情况下，第一条命令返回 `/usr/local/bin/codex-use`，第二条命令显示 `start`、`stop`、`restart` 和 `status`。
+正常情况下，第一条命令返回 `/usr/local/bin/codex-use`，第二条命令显示 `start`、`stop`、`restart`、`status` 和 `version`，第三条命令显示当前插件与菜单栏应用版本。
 
 如果 `ln` 提示 `File exists`，先运行：
 
@@ -230,6 +232,19 @@ codex-use restart
 
 ```bash
 codex-use status
+```
+
+### 查看版本
+
+```bash
+codex-use version
+```
+
+示例输出：
+
+```text
+codex-quota-monitor 0.7.3
+CodexQuotaMenu 0.7.3 (build 11)
 ```
 
 ### 强制重建并重启

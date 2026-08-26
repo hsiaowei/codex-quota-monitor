@@ -15,10 +15,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, time as datetime_time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
-CLIENT_VERSION = "0.7.2"
+CLIENT_VERSION = "0.7.3"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 CACHE_VERSION = 1
 DAILY_QUOTA_CACHE_VERSION = 1
@@ -173,41 +173,64 @@ def _number(value: Any) -> float | None:
     return None
 
 
-def extract_windows(limits_result: dict[str, Any]) -> list[Window]:
+def _codex_bucket(limits_result: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     by_id = limits_result.get("rateLimitsByLimitId")
     if isinstance(by_id, dict) and by_id:
-        buckets: Iterable[tuple[str, Any]] = by_id.items()
-    else:
-        single = limits_result.get("rateLimits")
-        limit_id = single.get("limitId", "codex") if isinstance(single, dict) else "codex"
-        buckets = [(str(limit_id), single)]
+        exact = by_id.get("codex")
+        if isinstance(exact, dict):
+            return "codex", exact
+        for fallback_id, bucket in by_id.items():
+            if not isinstance(bucket, dict):
+                continue
+            limit_id = str(bucket.get("limitId") or fallback_id)
+            if limit_id.casefold() == "codex":
+                return limit_id, bucket
+
+    single = limits_result.get("rateLimits")
+    if isinstance(single, dict):
+        limit_id = single.get("limitId")
+        if limit_id is None or str(limit_id).casefold() == "codex":
+            return "codex", single
+
+    if isinstance(limits_result.get("primary"), dict) or isinstance(
+        limits_result.get("secondary"), dict
+    ):
+        limit_id = limits_result.get("limitId")
+        if limit_id is not None and str(limit_id).casefold() == "codex":
+            return "codex", limits_result
+
+    return None
+
+
+def extract_windows(limits_result: dict[str, Any]) -> list[Window]:
+    selected = _codex_bucket(limits_result)
+    if selected is None:
+        return []
+    fallback_id, bucket = selected
 
     windows: list[Window] = []
-    for fallback_id, bucket in buckets:
-        if not isinstance(bucket, dict):
+    limit_id = str(bucket.get("limitId") or fallback_id)
+    limit_name = bucket.get("limitName")
+    for kind in ("primary", "secondary"):
+        window = bucket.get(kind)
+        if not isinstance(window, dict):
             continue
-        limit_id = str(bucket.get("limitId") or fallback_id)
-        limit_name = bucket.get("limitName")
-        for kind in ("primary", "secondary"):
-            window = bucket.get(kind)
-            if not isinstance(window, dict):
-                continue
-            used = _number(window.get("usedPercent"))
-            duration = _number(window.get("windowDurationMins"))
-            resets_at = _number(window.get("resetsAt"))
-            if used is None or duration is None or resets_at is None:
-                continue
-            windows.append(
-                Window(
-                    limit_id=limit_id,
-                    limit_name=str(limit_name) if limit_name else None,
-                    kind=kind,
-                    used_percent=max(0.0, min(100.0, used)),
-                    duration_minutes=max(0, int(duration)),
-                    resets_at=int(resets_at),
-                )
+        used = _number(window.get("usedPercent"))
+        duration = _number(window.get("windowDurationMins"))
+        resets_at = _number(window.get("resetsAt"))
+        if used is None or duration is None or resets_at is None:
+            continue
+        windows.append(
+            Window(
+                limit_id=limit_id,
+                limit_name=str(limit_name) if limit_name else None,
+                kind=kind,
+                used_percent=max(0.0, min(100.0, used)),
+                duration_minutes=max(0, int(duration)),
+                resets_at=int(resets_at),
             )
-    return sorted(windows, key=lambda item: (item.duration_minutes, item.limit_id, item.kind))
+        )
+    return sorted(windows, key=lambda item: (item.duration_minutes, item.kind))
 
 
 def _mask_email(email: str | None) -> str:
@@ -684,13 +707,8 @@ def _countdown(timestamp: int, now: int) -> str:
 
 
 def _plan_and_credits(limits_result: dict[str, Any], windows: list[Window]) -> tuple[str, dict[str, Any] | None]:
-    candidates: list[dict[str, Any]] = []
-    by_id = limits_result.get("rateLimitsByLimitId")
-    if isinstance(by_id, dict):
-        candidates.extend(item for item in by_id.values() if isinstance(item, dict))
-    single = limits_result.get("rateLimits")
-    if isinstance(single, dict):
-        candidates.append(single)
+    selected = _codex_bucket(limits_result)
+    candidates = [selected[1]] if selected is not None else []
 
     plan = "未知"
     credits = None

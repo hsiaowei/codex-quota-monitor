@@ -55,7 +55,8 @@ python3 <plugin-root>/scripts/launch_menu_bar.py --stop
 
 When the repository's `scripts/codex-use.sh` has been linked as `codex-use`,
 the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
-`codex-use restart`, and `codex-use status`.
+`codex-use restart`, `codex-use status`, and `codex-use version`. The version
+command prints both the plugin version and the native menu bar app version/build.
 
 ## Safety and accuracy
 
@@ -63,7 +64,11 @@ the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
 - Never open, print, copy, or parse Codex authentication files or tokens.
 - The app-server owns authentication and returns only account metadata and quota
   state needed for the report.
-- Prefer `rateLimitsByLimitId` when present; the script handles this selection.
+- Prefer the official `codex` entry in `rateLimitsByLimitId`, then the official
+  top-level `rateLimits` fallback. Ignore reserve buckets such as `gpt-reserve`
+  and `base_model_inference` even when they expose the same 300-minute or
+  10,080-minute windows; five-hour and weekly displays must come from the same
+  Codex quota bucket.
 - Read today's tokens from both active and archived local `token_count` session
   events, deduplicate events that appear in both locations, and sum only
   `last_token_usage.total_tokens` whose event timestamp is on the current local

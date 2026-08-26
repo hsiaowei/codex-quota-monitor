@@ -40,33 +40,60 @@ static NSDateFormatter *QuotaDayFormatter(void) {
     return formatter;
 }
 
-static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targetMinutes) {
+static BOOL QuotaLimitIDIsCodex(id value) {
+    return [value isKindOfClass:NSString.class] &&
+           [(NSString *)value caseInsensitiveCompare:@"codex"] == NSOrderedSame;
+}
+
+static NSDictionary *QuotaCodexBucketFromLimits(NSDictionary *limits) {
     if (![limits isKindOfClass:NSDictionary.class]) return nil;
-    NSMutableArray<NSDictionary *> *buckets = [NSMutableArray array];
-    NSDictionary *single = limits[@"rateLimits"];
-    if ([single isKindOfClass:NSDictionary.class]) [buckets addObject:single];
     NSDictionary *byID = limits[@"rateLimitsByLimitId"];
     if ([byID isKindOfClass:NSDictionary.class]) {
-        for (id value in byID.allValues) {
-            if ([value isKindOfClass:NSDictionary.class]) [buckets addObject:value];
+        NSDictionary *exact = byID[@"codex"];
+        if ([exact isKindOfClass:NSDictionary.class]) {
+            NSMutableDictionary *result = [exact mutableCopy];
+            result[@"limitId"] = @"codex";
+            return result;
         }
-    }
-    if ([limits[@"primary"] isKindOfClass:NSDictionary.class] ||
-        [limits[@"secondary"] isKindOfClass:NSDictionary.class]) {
-        [buckets addObject:limits];
-    }
-    for (NSDictionary *bucket in buckets) {
-        for (NSString *kind in @[@"primary", @"secondary"]) {
-            NSDictionary *window = bucket[kind];
-            NSNumber *used = [window isKindOfClass:NSDictionary.class] ? window[@"usedPercent"] : nil;
-            NSNumber *duration = [window isKindOfClass:NSDictionary.class] ? window[@"windowDurationMins"] : nil;
-            if ([used isKindOfClass:NSNumber.class] && [duration isKindOfClass:NSNumber.class] &&
-                duration.integerValue == targetMinutes) {
-                NSMutableDictionary *result = [window mutableCopy];
-                result[@"kind"] = kind;
-                if ([bucket[@"limitId"] isKindOfClass:NSString.class]) result[@"limitId"] = bucket[@"limitId"];
+        for (id key in byID) {
+            NSDictionary *candidate = [byID[key] isKindOfClass:NSDictionary.class] ? byID[key] : nil;
+            id limitID = candidate[@"limitId"] ?: key;
+            if (candidate && QuotaLimitIDIsCodex(limitID)) {
+                NSMutableDictionary *result = [candidate mutableCopy];
+                result[@"limitId"] = @"codex";
                 return result;
             }
+        }
+    }
+
+    NSDictionary *single = limits[@"rateLimits"];
+    if ([single isKindOfClass:NSDictionary.class] &&
+        (!single[@"limitId"] || QuotaLimitIDIsCodex(single[@"limitId"]))) {
+        NSMutableDictionary *result = [single mutableCopy];
+        result[@"limitId"] = @"codex";
+        return result;
+    }
+
+    if ([limits[@"primary"] isKindOfClass:NSDictionary.class] ||
+        [limits[@"secondary"] isKindOfClass:NSDictionary.class]) {
+        if (QuotaLimitIDIsCodex(limits[@"limitId"])) return limits;
+    }
+    return nil;
+}
+
+static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targetMinutes) {
+    NSDictionary *bucket = QuotaCodexBucketFromLimits(limits);
+    if (!bucket) return nil;
+    for (NSString *kind in @[@"primary", @"secondary"]) {
+        NSDictionary *window = bucket[kind];
+        NSNumber *used = [window isKindOfClass:NSDictionary.class] ? window[@"usedPercent"] : nil;
+        NSNumber *duration = [window isKindOfClass:NSDictionary.class] ? window[@"windowDurationMins"] : nil;
+        if ([used isKindOfClass:NSNumber.class] && [duration isKindOfClass:NSNumber.class] &&
+            duration.integerValue == targetMinutes) {
+            NSMutableDictionary *result = [window mutableCopy];
+            result[@"kind"] = kind;
+            result[@"limitId"] = @"codex";
+            return result;
         }
     }
     return nil;
@@ -500,7 +527,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"0.7.2"}}},
+                                           @"version": @"0.7.3"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -566,14 +593,12 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         return nil;
     }
 
-    NSMutableArray<NSDictionary *> *buckets = [NSMutableArray array];
-    NSDictionary *byID = limitsResult[@"rateLimitsByLimitId"];
-    if ([byID isKindOfClass:NSDictionary.class]) {
-        for (id value in byID.allValues) if ([value isKindOfClass:NSDictionary.class]) [buckets addObject:value];
+    NSDictionary *codexBucket = QuotaCodexBucketFromLimits(limitsResult);
+    if (!codexBucket) {
+        if (error) *error = QuotaError(@"官方接口没有返回 Codex 额度桶");
+        return nil;
     }
-    if (buckets.count == 0 && [limitsResult[@"rateLimits"] isKindOfClass:NSDictionary.class]) {
-        [buckets addObject:limitsResult[@"rateLimits"]];
-    }
+    NSArray<NSDictionary *> *buckets = @[codexBucket];
 
     NSString *plan = account[@"planType"];
     NSString *creditsBalance = nil;
@@ -593,7 +618,8 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
                 @"used": used,
                 @"duration": duration,
                 @"resetsAt": resetsAt,
-                @"label": [self windowLabel:duration.integerValue]
+                @"label": [self windowLabel:duration.integerValue],
+                @"limitId": @"codex"
             }];
         }
     }
@@ -746,13 +772,14 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     if (recordedWindow) return;
 
     NSString *limitId = [limits[@"limitId"] isKindOfClass:NSString.class] ? limits[@"limitId"] : nil;
-    if (_weeklyKind.length > 0 &&
-        !(_weeklyLimitId.length > 0 && limitId.length > 0 && ![_weeklyLimitId isEqual:limitId])) {
+    BOOL isCodexUpdate = QuotaLimitIDIsCodex(limitId);
+    BOOL isUnidentifiedCodexUpdate = limitId.length == 0 && QuotaLimitIDIsCodex(_weeklyLimitId);
+    if (_weeklyKind.length > 0 && (isCodexUpdate || isUnidentifiedCodexUpdate)) {
         NSDictionary *sparseWeekly = limits[_weeklyKind];
         if ([sparseWeekly isKindOfClass:NSDictionary.class]) [self recordWindow:sparseWeekly weekly:YES];
     }
-    if (_fiveHourKind.length > 0 &&
-        !(_fiveHourLimitId.length > 0 && limitId.length > 0 && ![_fiveHourLimitId isEqual:limitId])) {
+    isUnidentifiedCodexUpdate = limitId.length == 0 && QuotaLimitIDIsCodex(_fiveHourLimitId);
+    if (_fiveHourKind.length > 0 && (isCodexUpdate || isUnidentifiedCodexUpdate)) {
         NSDictionary *sparseFiveHour = limits[_fiveHourKind];
         if ([sparseFiveHour isKindOfClass:NSDictionary.class]) [self recordWindow:sparseFiveHour weekly:NO];
     }
@@ -776,7 +803,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     [self send:@{@"method": @"initialize", @"id": @100,
                  @"params": @{@"clientInfo": @{@"name": @"codex_quota_observer",
                                                    @"title": @"Codex Quota Observer",
-                                                   @"version": @"0.7.2"}}}
+                                                   @"version": @"0.7.3"}}}
           toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"initialized", @"params": @{}} toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"account/rateLimits/read", @"id": @101} toHandle:input.fileHandleForWriting];

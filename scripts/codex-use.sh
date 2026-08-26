@@ -14,6 +14,9 @@ done
 
 script_dir=$(CDPATH= cd -P -- "$(dirname -- "$script_path")" && pwd)
 launcher=$script_dir/launch_menu_bar.py
+plugin_root=$(CDPATH= cd -P -- "$script_dir/.." && pwd)
+manifest=$plugin_root/.codex-plugin/plugin.json
+info_plist=$plugin_root/macos/Info.plist
 
 if [ ! -f "$launcher" ]; then
     printf '%s\n' "错误：找不到 Codex 额度菜单栏启动器：$launcher" >&2
@@ -22,12 +25,24 @@ fi
 
 usage() {
     printf '%s\n' \
-        "用法：codex-use start|stop|restart|status" \
+        "用法：codex-use start|stop|restart|status|version" \
         "" \
         "  start    启动 Codex 额度菜单栏" \
         "  stop     停止 Codex 额度菜单栏" \
         "  restart  重启 Codex 额度菜单栏" \
-        "  status   查看是否正在运行"
+        "  status   查看是否正在运行" \
+        "  version  显示插件和菜单栏应用版本"
+}
+
+show_version() {
+    plugin_version=$(python3 -c \
+        'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' \
+        "$manifest" 2>/dev/null) || plugin_version=未知
+    app_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_plist" 2>/dev/null) || app_version=未知
+    app_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist" 2>/dev/null) || app_build=未知
+    printf '%s\n' \
+        "codex-quota-monitor $plugin_version" \
+        "CodexQuotaMenu $app_version (build $app_build)"
 }
 
 case "${1:-}" in
@@ -48,6 +63,9 @@ case "${1:-}" in
             printf '%s\n' "Codex 额度菜单栏当前没有运行。"
             exit 1
         fi
+        ;;
+    version|-v|--version)
+        show_version
         ;;
     help|-h|--help)
         usage
