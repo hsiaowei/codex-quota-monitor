@@ -40,7 +40,7 @@ static NSDateFormatter *QuotaDayFormatter(void) {
     return formatter;
 }
 
-static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
+static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targetMinutes) {
     if (![limits isKindOfClass:NSDictionary.class]) return nil;
     NSMutableArray<NSDictionary *> *buckets = [NSMutableArray array];
     NSDictionary *single = limits[@"rateLimits"];
@@ -61,7 +61,7 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
             NSNumber *used = [window isKindOfClass:NSDictionary.class] ? window[@"usedPercent"] : nil;
             NSNumber *duration = [window isKindOfClass:NSDictionary.class] ? window[@"windowDurationMins"] : nil;
             if ([used isKindOfClass:NSNumber.class] && [duration isKindOfClass:NSNumber.class] &&
-                duration.integerValue == 10080) {
+                duration.integerValue == targetMinutes) {
                 NSMutableDictionary *result = [window mutableCopy];
                 result[@"kind"] = kind;
                 if ([bucket[@"limitId"] isKindOfClass:NSString.class]) result[@"limitId"] = bucket[@"limitId"];
@@ -186,6 +186,7 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
 }
 
 - (NSString *)windowLabel:(NSInteger)minutes {
+    if (minutes == 300) return @"5 小时额度";
     if (minutes == 10080) return @"周额度";
     if (minutes > 0 && minutes % 1440 == 0) return [NSString stringWithFormat:@"%ld 天窗口", (long)(minutes / 1440)];
     if (minutes > 0 && minutes % 60 == 0) return [NSString stringWithFormat:@"%ld 小时窗口", (long)(minutes / 60)];
@@ -499,7 +500,7 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"0.6.2"}}},
+                                           @"version": @"0.7.1"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -598,9 +599,16 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     }
 
     NSDictionary *chosen = nil;
+    NSDictionary *fiveHourWindow = nil;
     for (NSDictionary *window in windows) {
-        if ([window[@"duration"] integerValue] == 10080) { chosen = window; break; }
-        if (!chosen || [window[@"duration"] integerValue] > [chosen[@"duration"] integerValue]) chosen = window;
+        NSInteger duration = [window[@"duration"] integerValue];
+        if (duration == 300) fiveHourWindow = window;
+        if (duration == 10080) {
+            chosen = window;
+        } else if (!chosen || ([chosen[@"duration"] integerValue] != 10080 &&
+                               duration > [chosen[@"duration"] integerValue])) {
+            chosen = window;
+        }
     }
     if (!chosen) {
         if (error) *error = QuotaError(@"没有可显示的额度窗口");
@@ -617,8 +625,17 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
         @"used": @(used),
         @"remaining": @(100 - used),
         @"resetsAt": chosen[@"resetsAt"],
+        @"mainWindowDuration": chosen[@"duration"],
         @"fetchedAt": [NSDate date]
     } mutableCopy];
+    if (fiveHourWindow) {
+        double fiveHourUsed = MAX(0, MIN(100, [fiveHourWindow[@"used"] doubleValue]));
+        snapshot[@"fiveHourWindow"] = @{
+            @"used": @(fiveHourUsed),
+            @"remaining": @(100 - fiveHourUsed),
+            @"resetsAt": fiveHourWindow[@"resetsAt"]
+        };
+    }
     if ([resetCredits isKindOfClass:NSNumber.class]) snapshot[@"resetCredits"] = resetCredits;
     if (creditsBalance) snapshot[@"creditsBalance"] = creditsBalance;
     if ([chosen[@"duration"] integerValue] == 10080 && _tracker) {
@@ -643,6 +660,8 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     NSTask *_task;
     NSString *_weeklyKind;
     NSString *_weeklyLimitId;
+    NSString *_fiveHourKind;
+    NSString *_fiveHourLimitId;
     BOOL _shouldRun;
 }
 
@@ -675,16 +694,25 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     }
 }
 
-- (void)recordWindow:(NSDictionary *)window {
+- (void)recordWindow:(NSDictionary *)window weekly:(BOOL)isWeekly {
     NSNumber *used = window[@"usedPercent"];
     if (![used isKindOfClass:NSNumber.class]) return;
-    NSDictionary *tracking = [_tracker recordWeeklyUsedPercent:used.doubleValue atDate:NSDate.date];
-    NSMutableDictionary *update = [@{
-        @"currentUsed": @(MAX(0, MIN(100, used.doubleValue))),
-        @"todayWeeklyQuotaUsed": tracking[@"usedPercent"],
-        @"todayQuotaTrackingStartedAt": tracking[@"trackingStartedAt"]
-    } mutableCopy];
-    if ([window[@"resetsAt"] isKindOfClass:NSNumber.class]) update[@"resetsAt"] = window[@"resetsAt"];
+    double normalizedUsed = MAX(0, MIN(100, used.doubleValue));
+    NSMutableDictionary *update = [NSMutableDictionary dictionary];
+    if (isWeekly) {
+        NSDictionary *tracking = [_tracker recordWeeklyUsedPercent:normalizedUsed atDate:NSDate.date];
+        update[@"currentUsed"] = @(normalizedUsed);
+        update[@"todayWeeklyQuotaUsed"] = tracking[@"usedPercent"];
+        update[@"todayQuotaTrackingStartedAt"] = tracking[@"trackingStartedAt"];
+        if ([window[@"resetsAt"] isKindOfClass:NSNumber.class]) update[@"resetsAt"] = window[@"resetsAt"];
+    } else {
+        NSMutableDictionary *fiveHour = [@{
+            @"used": @(normalizedUsed),
+            @"remaining": @(100 - normalizedUsed)
+        } mutableCopy];
+        if ([window[@"resetsAt"] isKindOfClass:NSNumber.class]) fiveHour[@"resetsAt"] = window[@"resetsAt"];
+        update[@"fiveHourWindow"] = fiveHour;
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.onUpdate) self.onUpdate(update);
     });
@@ -700,19 +728,34 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     }
     if (![limits isKindOfClass:NSDictionary.class]) return;
 
-    NSDictionary *weekly = QuotaWeeklyWindowFromLimits(limits);
+    NSDictionary *weekly = QuotaWindowFromLimits(limits, 10080);
+    NSDictionary *fiveHour = QuotaWindowFromLimits(limits, 300);
+    BOOL recordedWindow = NO;
     if (weekly) {
         _weeklyKind = weekly[@"kind"];
         _weeklyLimitId = weekly[@"limitId"];
-        [self recordWindow:weekly];
-        return;
+        [self recordWindow:weekly weekly:YES];
+        recordedWindow = YES;
     }
+    if (fiveHour) {
+        _fiveHourKind = fiveHour[@"kind"];
+        _fiveHourLimitId = fiveHour[@"limitId"];
+        [self recordWindow:fiveHour weekly:NO];
+        recordedWindow = YES;
+    }
+    if (recordedWindow) return;
 
-    if (_weeklyKind.length == 0) return;
     NSString *limitId = [limits[@"limitId"] isKindOfClass:NSString.class] ? limits[@"limitId"] : nil;
-    if (_weeklyLimitId.length > 0 && limitId.length > 0 && ![_weeklyLimitId isEqual:limitId]) return;
-    NSDictionary *sparseWindow = limits[_weeklyKind];
-    if ([sparseWindow isKindOfClass:NSDictionary.class]) [self recordWindow:sparseWindow];
+    if (_weeklyKind.length > 0 &&
+        !(_weeklyLimitId.length > 0 && limitId.length > 0 && ![_weeklyLimitId isEqual:limitId])) {
+        NSDictionary *sparseWeekly = limits[_weeklyKind];
+        if ([sparseWeekly isKindOfClass:NSDictionary.class]) [self recordWindow:sparseWeekly weekly:YES];
+    }
+    if (_fiveHourKind.length > 0 &&
+        !(_fiveHourLimitId.length > 0 && limitId.length > 0 && ![_fiveHourLimitId isEqual:limitId])) {
+        NSDictionary *sparseFiveHour = limits[_fiveHourKind];
+        if ([sparseFiveHour isKindOfClass:NSDictionary.class]) [self recordWindow:sparseFiveHour weekly:NO];
+    }
 }
 
 - (void)start {
@@ -733,7 +776,7 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     [self send:@{@"method": @"initialize", @"id": @100,
                  @"params": @{@"clientInfo": @{@"name": @"codex_quota_observer",
                                                    @"title": @"Codex Quota Observer",
-                                                   @"version": @"0.6.2"}}}
+                                                   @"version": @"0.7.1"}}}
           toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"initialized", @"params": @{}} toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"account/rateLimits/read", @"id": @101} toHandle:input.fileHandleForWriting];
@@ -823,8 +866,13 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     NSTextField *_percentLabel;
     QuotaProgressView *_progress;
     NSTextField *_usedLabel;
-    NSTextField *_todayQuotaLabel;
     NSTextField *_countdownLabel;
+    NSTextField *_fiveHourWindowLabel;
+    NSTextField *_fiveHourPercentLabel;
+    QuotaProgressView *_fiveHourProgress;
+    NSTextField *_fiveHourUsedLabel;
+    NSTextField *_fiveHourCountdownLabel;
+    NSTextField *_fiveHourMetaLabel;
     NSTextField *_resetLabel;
     NSTextField *_creditsLabel;
     NSTextField *_updatedLabel;
@@ -841,104 +889,128 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
 }
 
 - (void)loadView {
-    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 360, 360)];
+    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 360, 470)];
     self.view.wantsLayer = YES;
     self.view.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.965 green:0.975 blue:0.988 alpha:1].CGColor;
 
     NSTextField *title = [self label:@"Codex 实际额度" size:16 weight:NSFontWeightSemibold color:QuotaText()];
-    title.frame = NSMakeRect(20, 320, 210, 24);
+    title.frame = NSMakeRect(20, 430, 210, 24);
     [self.view addSubview:title];
 
     NSButton *refresh = [NSButton buttonWithTitle:@"刷新" target:self action:@selector(refreshClicked:)];
     refresh.bezelStyle = NSBezelStyleInline;
-    refresh.frame = NSMakeRect(266, 318, 46, 26);
+    refresh.frame = NSMakeRect(266, 428, 46, 26);
     [self.view addSubview:refresh];
 
     NSButton *quit = [NSButton buttonWithTitle:@"退出" target:self action:@selector(quitClicked:)];
     quit.bezelStyle = NSBezelStyleInline;
-    quit.frame = NSMakeRect(310, 318, 42, 26);
+    quit.frame = NSMakeRect(310, 428, 42, 26);
     [self.view addSubview:quit];
 
     _accountLabel = [self label:@"正在读取账号…" size:11 weight:NSFontWeightRegular color:QuotaMuted()];
-    _accountLabel.frame = NSMakeRect(20, 293, 240, 18);
+    _accountLabel.frame = NSMakeRect(20, 403, 240, 18);
     [self.view addSubview:_accountLabel];
 
     _stateLabel = [self label:@"连接中" size:10 weight:NSFontWeightSemibold color:QuotaGreen()];
     _stateLabel.alignment = NSTextAlignmentRight;
-    _stateLabel.frame = NSMakeRect(270, 293, 70, 18);
+    _stateLabel.frame = NSMakeRect(270, 403, 70, 18);
     [self.view addSubview:_stateLabel];
 
     _todayTokensLabel = [self label:@"今日（本机实时）：正在读取…" size:11 weight:NSFontWeightSemibold color:QuotaText()];
-    _todayTokensLabel.frame = NSMakeRect(20, 267, 320, 18);
+    _todayTokensLabel.frame = NSMakeRect(20, 377, 320, 18);
     [self.view addSubview:_todayTokensLabel];
 
     _comparisonTokensLabel = [self label:@"昨日（官方）：正在读取…" size:11 weight:NSFontWeightRegular color:QuotaText()];
-    _comparisonTokensLabel.frame = NSMakeRect(20, 246, 320, 18);
+    _comparisonTokensLabel.frame = NSMakeRect(20, 356, 320, 18);
     [self.view addSubview:_comparisonTokensLabel];
 
     _cacheInfoButton = [NSButton buttonWithTitle:@"ⓘ" target:self action:@selector(cacheInfoClicked:)];
     _cacheInfoButton.bezelStyle = NSBezelStyleInline;
     _cacheInfoButton.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
     _cacheInfoButton.contentTintColor = QuotaYellow();
-    _cacheInfoButton.frame = NSMakeRect(136, 243, 26, 24);
+    _cacheInfoButton.frame = NSMakeRect(136, 353, 26, 24);
     _cacheInfoButton.toolTip = @"查看缓存数据说明";
     _cacheInfoButton.hidden = YES;
     [self.view addSubview:_cacheInfoButton];
 
     _cacheTimeLabel = [self label:@"" size:9 weight:NSFontWeightRegular color:QuotaYellow()];
-    _cacheTimeLabel.frame = NSMakeRect(160, 246, 180, 18);
+    _cacheTimeLabel.frame = NSMakeRect(160, 356, 180, 18);
     _cacheTimeLabel.hidden = YES;
     [self.view addSubview:_cacheTimeLabel];
 
     _weekTokensLabel = [self label:@"本周：正在读取…" size:11 weight:NSFontWeightRegular color:QuotaText()];
-    _weekTokensLabel.frame = NSMakeRect(20, 225, 320, 18);
+    _weekTokensLabel.frame = NSMakeRect(20, 335, 320, 18);
     [self.view addSubview:_weekTokensLabel];
 
     _monthTokensLabel = [self label:@"本月：正在读取…" size:11 weight:NSFontWeightRegular color:QuotaText()];
-    _monthTokensLabel.frame = NSMakeRect(20, 204, 320, 18);
+    _monthTokensLabel.frame = NSMakeRect(20, 314, 320, 18);
     [self.view addSubview:_monthTokensLabel];
 
-    _windowLabel = [self label:@"周额度" size:14 weight:NSFontWeightSemibold color:QuotaText()];
-    _windowLabel.frame = NSMakeRect(20, 171, 150, 24);
+    _windowLabel = [self label:@"周额度（周额度消耗：正在累计…）" size:13 weight:NSFontWeightSemibold color:QuotaText()];
+    _windowLabel.frame = NSMakeRect(20, 277, 225, 24);
     [self.view addSubview:_windowLabel];
 
     _percentLabel = [self label:@"--%" size:30 weight:NSFontWeightBold color:QuotaGreen()];
     _percentLabel.alignment = NSTextAlignmentRight;
-    _percentLabel.frame = NSMakeRect(210, 163, 130, 38);
+    _percentLabel.frame = NSMakeRect(245, 269, 95, 38);
     [self.view addSubview:_percentLabel];
 
-    _progress = [[QuotaProgressView alloc] initWithFrame:NSMakeRect(20, 146, 320, 12)];
+    _progress = [[QuotaProgressView alloc] initWithFrame:NSMakeRect(20, 252, 320, 12)];
     [self.view addSubview:_progress];
 
     _usedLabel = [self label:@"已用 --%" size:11 weight:NSFontWeightRegular color:QuotaMuted()];
-    _usedLabel.frame = NSMakeRect(20, 121, 120, 18);
+    _usedLabel.frame = NSMakeRect(20, 227, 120, 18);
     [self.view addSubview:_usedLabel];
 
     _countdownLabel = [self label:@"刷新倒计时 --" size:11 weight:NSFontWeightSemibold color:QuotaText()];
     _countdownLabel.alignment = NSTextAlignmentRight;
-    _countdownLabel.frame = NSMakeRect(140, 121, 200, 18);
+    _countdownLabel.frame = NSMakeRect(140, 227, 200, 18);
     [self.view addSubview:_countdownLabel];
 
-    _todayQuotaLabel = [self label:@"今日周额度消耗：正在累计…" size:11 weight:NSFontWeightSemibold color:QuotaText()];
-    _todayQuotaLabel.frame = NSMakeRect(20, 100, 320, 18);
-    _todayQuotaLabel.toolTip = @"累计官方周额度已用百分比的上涨量；滚动释放造成的下降不会扣减。";
-    [self.view addSubview:_todayQuotaLabel];
+    _resetLabel = [self label:@"刷新时间：--" size:11 weight:NSFontWeightRegular color:QuotaText()];
+    _resetLabel.frame = NSMakeRect(20, 206, 320, 18);
+    [self.view addSubview:_resetLabel];
 
-    NSBox *divider = [[NSBox alloc] initWithFrame:NSMakeRect(20, 87, 320, 1)];
+    NSBox *quotaDivider = [[NSBox alloc] initWithFrame:NSMakeRect(20, 190, 320, 1)];
+    quotaDivider.boxType = NSBoxSeparator;
+    [self.view addSubview:quotaDivider];
+
+    _fiveHourWindowLabel = [self label:@"5 小时额度" size:14 weight:NSFontWeightSemibold color:QuotaText()];
+    _fiveHourWindowLabel.frame = NSMakeRect(20, 153, 220, 24);
+    [self.view addSubview:_fiveHourWindowLabel];
+
+    _fiveHourPercentLabel = [self label:@"--%" size:30 weight:NSFontWeightBold color:QuotaGreen()];
+    _fiveHourPercentLabel.alignment = NSTextAlignmentRight;
+    _fiveHourPercentLabel.frame = NSMakeRect(245, 145, 95, 38);
+    [self.view addSubview:_fiveHourPercentLabel];
+
+    _fiveHourProgress = [[QuotaProgressView alloc] initWithFrame:NSMakeRect(20, 128, 320, 12)];
+    [self.view addSubview:_fiveHourProgress];
+
+    _fiveHourUsedLabel = [self label:@"已用 --%" size:11 weight:NSFontWeightRegular color:QuotaMuted()];
+    _fiveHourUsedLabel.frame = NSMakeRect(20, 103, 120, 18);
+    [self.view addSubview:_fiveHourUsedLabel];
+
+    _fiveHourCountdownLabel = [self label:@"刷新倒计时 --" size:11 weight:NSFontWeightSemibold color:QuotaText()];
+    _fiveHourCountdownLabel.alignment = NSTextAlignmentRight;
+    _fiveHourCountdownLabel.frame = NSMakeRect(140, 103, 200, 18);
+    [self.view addSubview:_fiveHourCountdownLabel];
+
+    _fiveHourMetaLabel = [self label:@"刷新时间：--" size:11 weight:NSFontWeightRegular color:QuotaText()];
+    _fiveHourMetaLabel.frame = NSMakeRect(20, 82, 320, 18);
+    [self.view addSubview:_fiveHourMetaLabel];
+
+    NSBox *divider = [[NSBox alloc] initWithFrame:NSMakeRect(20, 66, 320, 1)];
     divider.boxType = NSBoxSeparator;
     [self.view addSubview:divider];
 
-    _resetLabel = [self label:@"刷新时间：--" size:11 weight:NSFontWeightRegular color:QuotaText()];
-    _resetLabel.frame = NSMakeRect(20, 61, 320, 18);
-    [self.view addSubview:_resetLabel];
-
     _creditsLabel = [self label:@"额度重置券：--" size:11 weight:NSFontWeightRegular color:QuotaMuted()];
-    _creditsLabel.frame = NSMakeRect(20, 38, 320, 18);
+    _creditsLabel.frame = NSMakeRect(20, 40, 320, 18);
     [self.view addSubview:_creditsLabel];
 
     _updatedLabel = [self label:@"" size:10 weight:NSFontWeightRegular color:NSColor.secondaryLabelColor];
     _updatedLabel.alignment = NSTextAlignmentRight;
-    _updatedLabel.frame = NSMakeRect(20, 13, 320, 16);
+    _updatedLabel.frame = NSMakeRect(20, 15, 320, 16);
     [self.view addSubview:_updatedLabel];
 
     [NSTimer scheduledTimerWithTimeInterval:30 target:self selector:@selector(updateCountdown:) userInfo:nil repeats:YES];
@@ -1010,7 +1082,7 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     _todayTokensLabel.stringValue = [NSString stringWithFormat:@"今日（本机实时）：%@", [self formatTokensWan:snapshot[@"todayTokens"]]];
     BOOL officialIsCached = [snapshot[@"officialIsCached"] boolValue];
     _comparisonTokensLabel.textColor = officialIsCached ? QuotaYellow() : QuotaText();
-    _comparisonTokensLabel.frame = officialIsCached ? NSMakeRect(20, 246, 116, 18) : NSMakeRect(20, 246, 320, 18);
+    _comparisonTokensLabel.frame = officialIsCached ? NSMakeRect(20, 356, 116, 18) : NSMakeRect(20, 356, 320, 18);
     _comparisonTokensLabel.stringValue = officialIsCached
         ? [NSString stringWithFormat:@"%@：%@", snapshot[@"comparisonLabel"] ?: @"昨日", [self formatTokensWan:snapshot[@"comparisonTokens"]]]
         : [NSString stringWithFormat:@"%@（官方 · %@）：%@",
@@ -1040,23 +1112,58 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
                                                              officialTokens:snapshot[@"monthOfficialTokens"]
                                                                  todayTokens:snapshot[@"todayTokens"]
                                                                       cached:officialIsCached];
-    _windowLabel.stringValue = snapshot[@"label"];
+    NSString *windowLabel = snapshot[@"label"] ?: @"额度";
+    NSNumber *todayQuotaUsed = snapshot[@"todayWeeklyQuotaUsed"];
+    if ([snapshot[@"mainWindowDuration"] integerValue] == 10080) {
+        windowLabel = [todayQuotaUsed isKindOfClass:NSNumber.class]
+            ? [NSString stringWithFormat:@"周额度（周额度消耗：约%@%%）",
+                 [self formatNumber:todayQuotaUsed.doubleValue]]
+            : @"周额度（周额度消耗：暂无数据）";
+    }
+    _windowLabel.stringValue = windowLabel;
+    _windowLabel.toolTip = @"周额度消耗累计官方周额度已用百分比的上涨量；滚动释放造成的下降不会扣减。";
     double remaining = [snapshot[@"remaining"] doubleValue];
     double used = [snapshot[@"used"] doubleValue];
     _percentLabel.stringValue = [[self formatNumber:remaining] stringByAppendingString:@"%"];
     _percentLabel.textColor = remaining <= 10 ? QuotaRed() : QuotaGreen();
     _progress.value = remaining;
     _usedLabel.stringValue = [NSString stringWithFormat:@"已用 %@%%", [self formatNumber:used]];
-    NSNumber *todayQuotaUsed = snapshot[@"todayWeeklyQuotaUsed"];
-    _todayQuotaLabel.stringValue = [todayQuotaUsed isKindOfClass:NSNumber.class]
-        ? [NSString stringWithFormat:@"今日周额度消耗：约 %@%%", [self formatNumber:todayQuotaUsed.doubleValue]]
-        : @"今日周额度消耗：暂无数据";
+    BOOL mainIsFiveHour = [snapshot[@"mainWindowDuration"] integerValue] == 300;
+    _fiveHourWindowLabel.hidden = mainIsFiveHour;
+    _fiveHourPercentLabel.hidden = mainIsFiveHour;
+    _fiveHourProgress.hidden = mainIsFiveHour;
+    _fiveHourUsedLabel.hidden = mainIsFiveHour;
+    _fiveHourCountdownLabel.hidden = mainIsFiveHour;
+    _fiveHourMetaLabel.hidden = mainIsFiveHour;
+    NSDictionary *fiveHour = snapshot[@"fiveHourWindow"];
+    NSNumber *fiveHourRemaining = [fiveHour isKindOfClass:NSDictionary.class] ? fiveHour[@"remaining"] : nil;
+    NSNumber *fiveHourUsed = [fiveHour isKindOfClass:NSDictionary.class] ? fiveHour[@"used"] : nil;
+    if ([fiveHourRemaining isKindOfClass:NSNumber.class] && [fiveHourUsed isKindOfClass:NSNumber.class]) {
+        double fiveRemaining = MAX(0, MIN(100, fiveHourRemaining.doubleValue));
+        double fiveUsed = MAX(0, MIN(100, fiveHourUsed.doubleValue));
+        _fiveHourPercentLabel.stringValue = [[self formatNumber:fiveRemaining] stringByAppendingString:@"%"];
+        _fiveHourPercentLabel.textColor = fiveRemaining <= 10 ? QuotaRed() : QuotaGreen();
+        _fiveHourProgress.value = fiveRemaining;
+        _fiveHourUsedLabel.stringValue = [NSString stringWithFormat:@"已用 %@%%", [self formatNumber:fiveUsed]];
+    } else {
+        _fiveHourPercentLabel.stringValue = @"暂无数据";
+        _fiveHourPercentLabel.textColor = QuotaMuted();
+        _fiveHourProgress.value = 0;
+        _fiveHourUsedLabel.stringValue = @"已用 暂无数据";
+        _fiveHourCountdownLabel.stringValue = @"刷新倒计时 暂无数据";
+        _fiveHourMetaLabel.stringValue = @"刷新时间：官方接口未返回 5 小时额度";
+    }
 
     NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
     dateFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
     dateFormatter.dateFormat = @"yyyy-MM-dd HH:mm";
     NSDate *reset = [NSDate dateWithTimeIntervalSince1970:[snapshot[@"resetsAt"] doubleValue]];
     _resetLabel.stringValue = [NSString stringWithFormat:@"刷新时间：%@", [dateFormatter stringFromDate:reset]];
+    NSNumber *fiveHourReset = [fiveHour isKindOfClass:NSDictionary.class] ? fiveHour[@"resetsAt"] : nil;
+    if ([fiveHourReset isKindOfClass:NSNumber.class]) {
+        NSDate *fiveReset = [NSDate dateWithTimeIntervalSince1970:fiveHourReset.doubleValue];
+        _fiveHourMetaLabel.stringValue = [NSString stringWithFormat:@"刷新时间：%@", [dateFormatter stringFromDate:fiveReset]];
+    }
 
     NSString *resetCredits = snapshot[@"resetCredits"] ? [NSString stringWithFormat:@"%@ 次", snapshot[@"resetCredits"]] : @"未知";
     NSString *balance = snapshot[@"creditsBalance"] ? [NSString stringWithFormat:@" · credits %@", snapshot[@"creditsBalance"]] : @"";
@@ -1069,11 +1176,6 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
 }
 
 - (void)updateQuotaObservation:(NSDictionary *)update {
-    NSNumber *todayQuotaUsed = update[@"todayWeeklyQuotaUsed"];
-    if ([todayQuotaUsed isKindOfClass:NSNumber.class]) {
-        _todayQuotaLabel.stringValue = [NSString stringWithFormat:@"今日周额度消耗：约 %@%%",
-                                         [self formatNumber:todayQuotaUsed.doubleValue]];
-    }
     if (!_snapshot) return;
     NSMutableDictionary *merged = [_snapshot mutableCopy];
     [merged addEntriesFromDictionary:update];
@@ -1102,9 +1204,9 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     [alert runModal];
 }
 
-- (void)updateCountdown:(NSTimer *)timer {
-    if (!_snapshot) return;
-    NSInteger seconds = MAX(0, [_snapshot[@"resetsAt"] doubleValue] - NSDate.date.timeIntervalSince1970);
+- (NSString *)countdownTextForResetAt:(NSNumber *)resetsAt {
+    if (![resetsAt isKindOfClass:NSNumber.class]) return @"暂无数据";
+    NSInteger seconds = MAX(0, resetsAt.doubleValue - NSDate.date.timeIntervalSince1970);
     NSInteger days = seconds / 86400;
     NSInteger hours = (seconds % 86400) / 3600;
     NSInteger minutes = (seconds % 3600) / 60;
@@ -1112,7 +1214,19 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     if (days > 0) [parts addObject:[NSString stringWithFormat:@"%ld天", (long)days]];
     if (hours > 0 || days > 0) [parts addObject:[NSString stringWithFormat:@"%ld小时", (long)hours]];
     [parts addObject:[NSString stringWithFormat:@"%ld分", (long)minutes]];
-    _countdownLabel.stringValue = [@"刷新倒计时 " stringByAppendingString:[parts componentsJoinedByString:@" "]];
+    return [parts componentsJoinedByString:@" "];
+}
+
+- (void)updateCountdown:(NSTimer *)timer {
+    if (!_snapshot) return;
+    _countdownLabel.stringValue = [@"刷新倒计时 " stringByAppendingString:
+        [self countdownTextForResetAt:_snapshot[@"resetsAt"]]];
+    NSDictionary *fiveHour = _snapshot[@"fiveHourWindow"];
+    NSNumber *fiveHourReset = [fiveHour isKindOfClass:NSDictionary.class] ? fiveHour[@"resetsAt"] : nil;
+    if ([fiveHourReset isKindOfClass:NSNumber.class]) {
+        _fiveHourCountdownLabel.stringValue = [@"刷新倒计时 " stringByAppendingString:
+            [self countdownTextForResetAt:fiveHourReset]];
+    }
 }
 
 - (void)refreshClicked:(id)sender { if (self.onRefresh) self.onRefresh(); }
@@ -1146,7 +1260,7 @@ static NSDictionary *QuotaWeeklyWindowFromLimits(NSDictionary *limits) {
     _statusItem.button.toolTip = @"Codex 实际额度";
 
     _popover = [[NSPopover alloc] init];
-    _popover.contentSize = NSMakeSize(360, 360);
+    _popover.contentSize = NSMakeSize(360, 470);
     _popover.behavior = NSPopoverBehaviorTransient;
     _popover.animates = YES;
     _popover.contentViewController = _controller;

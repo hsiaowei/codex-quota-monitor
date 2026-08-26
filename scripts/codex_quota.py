@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CLIENT_VERSION = "0.6.2"
+CLIENT_VERSION = "0.7.1"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 CACHE_VERSION = 1
 DAILY_QUOTA_CACHE_VERSION = 1
@@ -232,6 +232,8 @@ def _bar(remaining_percent: float, width: int = 20) -> str:
 
 
 def _window_label(minutes: int) -> str:
+    if minutes == 300:
+        return "5 小时额度"
     if minutes == 10_080:
         return "周额度"
     if minutes % 10_080 == 0 and minutes:
@@ -744,17 +746,16 @@ def render_markdown(data: dict[str, Any], show_email: bool = False) -> str:
     today_value = _format_tokens_wan(today_tokens) if isinstance(today_tokens, int) else "暂无数据"
     today_weekly_quota = data.get("todayWeeklyQuota")
     today_weekly_used = today_weekly_quota.get("usedPercent") if isinstance(today_weekly_quota, dict) else None
-    today_weekly_line = (
-        f"今日周额度消耗：**约 {_format_percent(float(today_weekly_used))}%**"
+    weekly_consumption_suffix = (
+        f"（周额度消耗：约{_format_percent(float(today_weekly_used))}%）"
         if isinstance(today_weekly_used, (int, float)) and not isinstance(today_weekly_used, bool)
-        else "今日周额度消耗：**暂无数据**"
+        else "（周额度消耗：暂无数据）"
     )
     lines = [
         "## Codex 实际额度",
         "",
         f"账号：{account_label}　|　套餐：{plan}",
         f"今日 Tokens（本机实时）：**{_format_tokens_wan(today_tokens)}**" if isinstance(today_tokens, int) else "今日 Tokens（本机实时）：**暂无数据**",
-        today_weekly_line,
         f"{comparison_label} Tokens（官方 · {comparison_date}）：**{official_marker}{comparison_value}**{cache_suffix}",
         f"本周 Tokens：**{official_marker}{week_official_value}（官方历史） + {today_value}（今日实时）**",
         f"本月 Tokens：**{official_marker}{month_official_value}（官方历史） + {today_value}（今日实时）**",
@@ -763,6 +764,8 @@ def render_markdown(data: dict[str, Any], show_email: bool = False) -> str:
 
     for window in windows:
         label = _window_label(window.duration_minutes)
+        if window.duration_minutes == 10_080:
+            label += weekly_consumption_suffix
         remaining = window.remaining_percent
         reset = _local_datetime(window.resets_at)
         zone = reset.tzname() or "本地时间"

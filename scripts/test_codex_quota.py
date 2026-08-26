@@ -75,6 +75,22 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(windows[0].duration_minutes, 10080)
         self.assertEqual(windows[0].remaining_percent, 6)
 
+    def test_five_hour_window_is_named_and_rendered_separately(self):
+        data = deepcopy(FIXTURE)
+        bucket = data["limits"]["rateLimitsByLimitId"]["codex"]
+        bucket["secondary"] = {
+            "usedPercent": 25,
+            "windowDurationMins": 300,
+            "resetsAt": 1786149000,
+        }
+        windows = MODULE.extract_windows(data["limits"])
+        five_hour = next(window for window in windows if window.duration_minutes == 300)
+        self.assertEqual(five_hour.remaining_percent, 75)
+        output = MODULE.render_markdown(data)
+        self.assertIn("### 5 小时额度", output)
+        self.assertIn("剩余 75%", output)
+        self.assertIn("已用 25%", output)
+
     def test_markdown_uses_real_percent_and_masks_email(self):
         output = MODULE.render_markdown(FIXTURE)
         self.assertIn("周额度", output)
@@ -82,7 +98,8 @@ class QuotaTests(unittest.TestCase):
         self.assertIn("ex*****@example.com", output)
         self.assertNotIn("example.user@example.com", output)
         self.assertIn("可用额度重置券：**1 次**", output)
-        self.assertIn("今日周额度消耗：**约 5%**", output)
+        self.assertIn("### 周额度（周额度消耗：约5%）", output)
+        self.assertNotIn("今日周额度消耗：", output)
 
     def test_daily_weekly_quota_accumulates_only_positive_changes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
