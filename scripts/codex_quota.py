@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-CLIENT_VERSION = "0.7.1"
+CLIENT_VERSION = "0.7.2"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 CACHE_VERSION = 1
 DAILY_QUOTA_CACHE_VERSION = 1
@@ -747,9 +747,9 @@ def render_markdown(data: dict[str, Any], show_email: bool = False) -> str:
     today_weekly_quota = data.get("todayWeeklyQuota")
     today_weekly_used = today_weekly_quota.get("usedPercent") if isinstance(today_weekly_quota, dict) else None
     weekly_consumption_suffix = (
-        f"（周额度消耗：约{_format_percent(float(today_weekly_used))}%）"
+        f"（今日消耗：约{_format_percent(float(today_weekly_used))}%）"
         if isinstance(today_weekly_used, (int, float)) and not isinstance(today_weekly_used, bool)
-        else "（周额度消耗：暂无数据）"
+        else "（今日消耗：暂无数据）"
     )
     lines = [
         "## Codex 实际额度",
@@ -799,7 +799,7 @@ def render_markdown(data: dict[str, Any], show_email: bool = False) -> str:
             "",
             f"数据获取时间：{fetched:%Y-%m-%d %H:%M:%S} {fetched.tzname() or '本地时间'}",
             "",
-            "> 今日 Tokens 来自本机 Codex 会话的实时 token 事件；今日周额度消耗累计官方周额度百分比的上涨量，滚动释放造成的下降不扣减，因此标记为“约”。对比日来自官方每日活动桶。本周和本月为“官方历史 + 本机今日”，不包含其他设备尚未回传的当日数据。",
+            "> 今日 Tokens 来自本机 Codex 会话的实时 token 事件；周额度标题中的“今日消耗”累计官方周额度百分比的上涨量，滚动释放造成的下降不扣减，因此标记为“约”。对比日来自官方每日活动桶。本周和本月为“官方历史 + 本机今日”，不包含其他设备尚未回传的当日数据。",
         ]
     )
     return "\n".join(lines)

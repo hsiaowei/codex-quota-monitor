@@ -500,7 +500,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"0.7.1"}}},
+                                           @"version": @"0.7.2"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -776,7 +776,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     [self send:@{@"method": @"initialize", @"id": @100,
                  @"params": @{@"clientInfo": @{@"name": @"codex_quota_observer",
                                                    @"title": @"Codex Quota Observer",
-                                                   @"version": @"0.7.1"}}}
+                                                   @"version": @"0.7.2"}}}
           toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"initialized", @"params": @{}} toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"account/rateLimits/read", @"id": @101} toHandle:input.fileHandleForWriting];
@@ -946,7 +946,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     _monthTokensLabel.frame = NSMakeRect(20, 314, 320, 18);
     [self.view addSubview:_monthTokensLabel];
 
-    _windowLabel = [self label:@"周额度（周额度消耗：正在累计…）" size:13 weight:NSFontWeightSemibold color:QuotaText()];
+    _windowLabel = [self label:@"周额度（今日消耗：正在累计…）" size:13 weight:NSFontWeightSemibold color:QuotaText()];
     _windowLabel.frame = NSMakeRect(20, 277, 225, 24);
     [self.view addSubview:_windowLabel];
 
@@ -1116,12 +1116,12 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     NSNumber *todayQuotaUsed = snapshot[@"todayWeeklyQuotaUsed"];
     if ([snapshot[@"mainWindowDuration"] integerValue] == 10080) {
         windowLabel = [todayQuotaUsed isKindOfClass:NSNumber.class]
-            ? [NSString stringWithFormat:@"周额度（周额度消耗：约%@%%）",
+            ? [NSString stringWithFormat:@"周额度（今日消耗：约%@%%）",
                  [self formatNumber:todayQuotaUsed.doubleValue]]
-            : @"周额度（周额度消耗：暂无数据）";
+            : @"周额度（今日消耗：暂无数据）";
     }
     _windowLabel.stringValue = windowLabel;
-    _windowLabel.toolTip = @"周额度消耗累计官方周额度已用百分比的上涨量；滚动释放造成的下降不会扣减。";
+    _windowLabel.toolTip = @"今日消耗累计官方周额度已用百分比的上涨量；滚动释放造成的下降不会扣减。";
     double remaining = [snapshot[@"remaining"] doubleValue];
     double used = [snapshot[@"used"] doubleValue];
     _percentLabel.stringValue = [[self formatNumber:remaining] stringByAppendingString:@"%"];

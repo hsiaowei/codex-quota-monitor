@@ -116,7 +116,7 @@ the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
   never persist authentication data. Label this daily result with `约`, reset it
   on the next local calendar day, and explain that the first day begins when
   tracking is enabled. Display it inside the weekly quota heading, for example
-  `周额度（周额度消耗：约2%）`, instead of as a separate row.
+  `周额度（今日消耗：约2%）`, instead of as a separate row.
 - A five-hour window is 300 minutes and a weekly window is 10,080 minutes.
   Other returned windows must also be shown.
 - If Codex returns no weekly window, say so; do not invent one.

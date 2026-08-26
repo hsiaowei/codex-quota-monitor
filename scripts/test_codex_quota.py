@@ -98,8 +98,8 @@ class QuotaTests(unittest.TestCase):
         self.assertIn("ex*****@example.com", output)
         self.assertNotIn("example.user@example.com", output)
         self.assertIn("可用额度重置券：**1 次**", output)
-        self.assertIn("### 周额度（周额度消耗：约5%）", output)
-        self.assertNotIn("今日周额度消耗：", output)
+        self.assertIn("### 周额度（今日消耗：约5%）", output)
+        self.assertNotIn("周额度消耗：", output)
 
     def test_daily_weekly_quota_accumulates_only_positive_changes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
