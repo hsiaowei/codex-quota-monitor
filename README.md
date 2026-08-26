@@ -4,6 +4,8 @@
 
 仓库地址：[github.com/hsiaowei/codex-quota-monitor](https://github.com/hsiaowei/codex-quota-monitor)
 <img width="381" height="405" alt="image" src="https://github.com/user-attachments/assets/4644852e-b345-4da5-96ca-6bd96dfd076e" />
+<img width="368" height="511" alt="image" src="https://github.com/user-attachments/assets/45478911-9a2b-4822-923a-7a31bcb58cba" />
+
 
 ## 1. 功能
 
