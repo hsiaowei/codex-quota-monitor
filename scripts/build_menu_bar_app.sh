@@ -21,6 +21,7 @@ xcrun clang \
   "$plugin_root/macos/CodexQuotaMenu.m" \
   -o "$binary_dir/CodexQuotaMenu"
 cp "$plugin_root/macos/Info.plist" "$contents_dir/Info.plist"
+cp "$plugin_root/scripts/quota_keepalive.py" "$resources_dir/quota_keepalive.py"
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --sign - "$app_dir" >/dev/null

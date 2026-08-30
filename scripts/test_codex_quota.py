@@ -78,8 +78,8 @@ class QuotaTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertIn("codex-quota-monitor 0.7.3", result.stdout)
-        self.assertIn("CodexQuotaMenu 0.7.3 (build 11)", result.stdout)
+        self.assertIn("codex-quota-monitor v8.0", result.stdout)
+        self.assertIn("CodexQuotaMenu v8.0 (build 13)", result.stdout)
 
     def test_codex_use_help_lists_version_command(self):
         result = subprocess.run(

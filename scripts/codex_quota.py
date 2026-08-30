@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
-CLIENT_VERSION = "0.7.3"
+CLIENT_VERSION = "8.0"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 CACHE_VERSION = 1
 DAILY_QUOTA_CACHE_VERSION = 1

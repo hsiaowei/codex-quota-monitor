@@ -45,6 +45,13 @@ scoped approval because it opens a local GUI and reads local Codex account
 state. Tell the user to click the `C <percent>%` menu bar item to expand or
 collapse the quota panel. The panel opens below the item, refreshes
 automatically every five minutes, and has manual refresh and quit buttons.
+After any successful quota refresh—startup, manual, or the five-minute automatic
+refresh—the app launches one minimal real `codex exec` request when the official
+Codex weekly or five-hour remaining percentage is 100. This anchors an otherwise
+unused rolling window's reset time. If both windows are at 100, use one request
+for both. Track cooldowns separately for each window until its own reset so
+repeated refreshes do not consume again; retry a failed request no sooner than
+15 minutes.
 
 If the launcher says the menu app is already running, do not start another
 copy. To stop it when the user explicitly asks, run:
@@ -61,6 +68,14 @@ command prints both the plugin version and the native menu bar app version/build
 ## Safety and accuracy
 
 - Never consume a rate-limit reset credit automatically.
+- The 100%-window keepalive must use `codex exec` with a read-only
+  sandbox, no tool calls, and a reply-only-`OK` prompt. Do not use an ephemeral
+  session: archive the temporary session after completion so its numeric Token
+  event remains available to today's local count. Persist only numeric attempt,
+  success, reset/cooldown timestamps and window names in
+  `~/.codex/codex-quota-monitor/quota-keepalive.json`; never save prompt,
+  response, or authentication content. Honor `CODEX_QUOTA_KEEPALIVE=0` as an
+  opt-out.
 - Never open, print, copy, or parse Codex authentication files or tokens.
 - The app-server owns authentication and returns only account metadata and quota
   state needed for the report.

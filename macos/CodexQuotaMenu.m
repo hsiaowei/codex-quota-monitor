@@ -527,7 +527,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"0.7.3"}}},
+                                           @"version": @"8.0"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -803,7 +803,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     [self send:@{@"method": @"initialize", @"id": @100,
                  @"params": @{@"clientInfo": @{@"name": @"codex_quota_observer",
                                                    @"title": @"Codex Quota Observer",
-                                                   @"version": @"0.7.3"}}}
+                                                   @"version": @"8.0"}}}
           toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"initialized", @"params": @{}} toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"account/rateLimits/read", @"id": @101} toHandle:input.fileHandleForWriting];
@@ -1345,12 +1345,60 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
             if (snapshot) {
                 [strongSelf->_controller showSnapshot:snapshot];
                 strongSelf->_statusItem.button.title = [NSString stringWithFormat:@"C %.0f%%", [snapshot[@"remaining"] doubleValue]];
+                [strongSelf runQuotaKeepaliveForSnapshot:snapshot];
             } else {
                 [strongSelf->_controller showError:error ?: QuotaError(@"未知错误")];
                 strongSelf->_statusItem.button.title = @"C !";
             }
         });
     });
+}
+
+- (void)runQuotaKeepaliveForSnapshot:(NSDictionary *)snapshot {
+    NSMutableArray<NSString *> *arguments = [NSMutableArray array];
+    NSString *script = [NSBundle.mainBundle pathForResource:@"quota_keepalive" ofType:@"py"];
+    if (script.length == 0) return;
+
+    NSInteger mainDuration = [snapshot[@"mainWindowDuration"] integerValue];
+    if (mainDuration == 10080 && [snapshot[@"remaining"] isKindOfClass:NSNumber.class]) {
+        [arguments addObjectsFromArray:@[
+            @"--weekly-remaining", [snapshot[@"remaining"] stringValue]
+        ]];
+        if ([snapshot[@"resetsAt"] isKindOfClass:NSNumber.class]) {
+            [arguments addObjectsFromArray:@[
+                @"--weekly-resets-at", [snapshot[@"resetsAt"] stringValue]
+            ]];
+        }
+    }
+
+    NSDictionary *fiveHour = [snapshot[@"fiveHourWindow"] isKindOfClass:NSDictionary.class]
+        ? snapshot[@"fiveHourWindow"]
+        : nil;
+    NSNumber *fiveHourRemaining = fiveHour[@"remaining"];
+    NSNumber *fiveHourReset = fiveHour[@"resetsAt"];
+    if (!fiveHour && mainDuration == 300) {
+        fiveHourRemaining = snapshot[@"remaining"];
+        fiveHourReset = snapshot[@"resetsAt"];
+    }
+    if ([fiveHourRemaining isKindOfClass:NSNumber.class]) {
+        [arguments addObjectsFromArray:@[
+            @"--five-hour-remaining", fiveHourRemaining.stringValue
+        ]];
+        if ([fiveHourReset isKindOfClass:NSNumber.class]) {
+            [arguments addObjectsFromArray:@[
+                @"--five-hour-resets-at", fiveHourReset.stringValue
+            ]];
+        }
+    }
+    if (arguments.count == 0) return;
+
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/python3"];
+    [arguments insertObject:script atIndex:0];
+    task.arguments = arguments;
+    task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    [task launchAndReturnError:nil];
 }
 @end
 
