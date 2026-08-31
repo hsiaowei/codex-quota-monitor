@@ -527,7 +527,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"8.0"}}},
+                                           @"version": @"0.8.0"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -803,7 +803,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     [self send:@{@"method": @"initialize", @"id": @100,
                  @"params": @{@"clientInfo": @{@"name": @"codex_quota_observer",
                                                    @"title": @"Codex Quota Observer",
-                                                   @"version": @"8.0"}}}
+                                                   @"version": @"0.8.0"}}}
           toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"initialized", @"params": @{}} toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"account/rateLimits/read", @"id": @101} toHandle:input.fileHandleForWriting];

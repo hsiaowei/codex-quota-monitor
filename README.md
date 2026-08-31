@@ -246,8 +246,8 @@ codex-use version
 示例输出：
 
 ```text
-codex-quota-monitor v8.0
-CodexQuotaMenu v8.0 (build 13)
+codex-quota-monitor v0.8.0
+CodexQuotaMenu v0.8.0 (build 13)
 ```
 
 ### 强制重建并重启

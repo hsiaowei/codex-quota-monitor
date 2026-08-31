@@ -39,9 +39,6 @@ show_version() {
         'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' \
         "$manifest" 2>/dev/null) || plugin_version=未知
     plugin_display_version=${plugin_version%%+*}
-    case "$plugin_display_version" in
-        *.*.0) plugin_display_version=${plugin_display_version%.0} ;;
-    esac
     app_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_plist" 2>/dev/null) || app_version=未知
     app_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist" 2>/dev/null) || app_build=未知
     printf '%s\n' \
