@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <UserNotifications/UserNotifications.h>
 
 static NSColor *QuotaGreen(void) {
     return [NSColor colorWithCalibratedRed:0.063 green:0.639 blue:0.498 alpha:1.0];
@@ -527,7 +528,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         @{@"method": @"initialize", @"id": @0,
           @"params": @{@"clientInfo": @{@"name": @"codex_quota_menu",
                                            @"title": @"Codex Quota Menu",
-                                           @"version": @"8.0"}}},
+                                           @"version": @"0.8.1"}}},
         @{@"method": @"initialized", @"params": @{}},
         @{@"method": @"account/read", @"id": @1, @"params": @{@"refreshToken": @NO}},
         @{@"method": @"account/rateLimits/read", @"id": @2},
@@ -803,7 +804,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     [self send:@{@"method": @"initialize", @"id": @100,
                  @"params": @{@"clientInfo": @{@"name": @"codex_quota_observer",
                                                    @"title": @"Codex Quota Observer",
-                                                   @"version": @"8.0"}}}
+                                                   @"version": @"0.8.1"}}}
           toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"initialized", @"params": @{}} toHandle:input.fileHandleForWriting];
     [self send:@{@"method": @"account/rateLimits/read", @"id": @101} toHandle:input.fileHandleForWriting];
@@ -1260,7 +1261,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
 - (void)quitClicked:(id)sender { if (self.onQuit) self.onQuit(); }
 @end
 
-@interface AppDelegate : NSObject <NSApplicationDelegate>
+@interface AppDelegate : NSObject <NSApplicationDelegate, UNUserNotificationCenterDelegate>
 @end
 
 @implementation AppDelegate {
@@ -1270,6 +1271,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     CodexQuotaClient *_client;
     QuotaDailyUsageTracker *_tracker;
     CodexQuotaObserver *_observer;
+    NSMutableSet<NSTask *> *_keepaliveTasks;
     BOOL _loading;
 }
 
@@ -1278,6 +1280,8 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     _tracker = [[QuotaDailyUsageTracker alloc] init];
     _client = [[CodexQuotaClient alloc] initWithTracker:_tracker];
     _observer = [[CodexQuotaObserver alloc] initWithTracker:_tracker];
+    _keepaliveTasks = [NSMutableSet set];
+    UNUserNotificationCenter.currentNotificationCenter.delegate = self;
     _controller = [[QuotaViewController alloc] init];
     _statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
     _statusItem.button.title = @"C …";
@@ -1396,9 +1400,47 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/python3"];
     [arguments insertObject:script atIndex:0];
     task.arguments = arguments;
-    task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    NSPipe *output = [NSPipe pipe];
+    task.standardOutput = output;
     task.standardError = [NSFileHandle fileHandleWithNullDevice];
-    [task launchAndReturnError:nil];
+    __weak typeof(self) weakSelf = self;
+    task.terminationHandler = ^(NSTask *completedTask) {
+        NSData *data = [output.fileHandleForReading readDataToEndOfFile];
+        NSString *status = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        status = [status stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            [strongSelf->_keepaliveTasks removeObject:completedTask];
+            if (completedTask.terminationStatus == 0 && [status isEqualToString:@"triggered"]) {
+                [strongSelf showKeepaliveNotification];
+            }
+        });
+    };
+    if ([task launchAndReturnError:nil]) [_keepaliveTasks addObject:task];
+}
+
+- (void)showKeepaliveNotification {
+    UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+    [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                          completionHandler:^(BOOL granted, NSError *error) {
+        if (!granted || error) return;
+        UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+        content.title = @"Codex 额度监控";
+        content.body = @"检测到额度为 100%，已执行一次最小 Token 消耗以固定重置时间。";
+        content.sound = UNNotificationSound.defaultSound;
+        UNNotificationRequest *request = [UNNotificationRequest
+            requestWithIdentifier:NSUUID.UUID.UUIDString
+                           content:content
+                           trigger:nil];
+        [center addNotificationRequest:request withCompletionHandler:nil];
+    }];
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+        willPresentNotification:(UNNotification *)notification
+          withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
 }
 @end
 

@@ -52,6 +52,12 @@ unused rolling window's reset time. If both windows are at 100, use one request
 for both. Track cooldowns separately for each window until its own reset so
 repeated refreshes do not consume again; retry a failed request no sooner than
 15 minutes.
+After the minimal request succeeds, deliver a native macOS notification telling
+the user that a 100% quota window was detected and one minimal Token consumption
+was completed to anchor the reset time. Never send this success notification for
+cooldown, not-needed, disabled, or failed results. Request notification permission
+through the system when needed and present the banner even while the menu app is
+foreground.
 
 If the launcher says the menu app is already running, do not start another
 copy. To stop it when the user explicitly asks, run:

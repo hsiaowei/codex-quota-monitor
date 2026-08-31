@@ -249,7 +249,9 @@ def main() -> int:
         windows.append(
             QuotaWindow("five-hour", args.five_hour_remaining, args.five_hour_resets_at)
         )
-    return 0 if run_once(windows, state_path=args.state_path) != "failed" else 1
+    result = run_once(windows, state_path=args.state_path)
+    print(result)
+    return 0 if result != "failed" else 1
 
 
 if __name__ == "__main__":

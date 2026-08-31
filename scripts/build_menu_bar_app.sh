@@ -18,6 +18,7 @@ xcrun clang \
   -fmodules \
   -fmodules-cache-path="$module_cache" \
   -framework Cocoa \
+  -framework UserNotifications \
   "$plugin_root/macos/CodexQuotaMenu.m" \
   -o "$binary_dir/CodexQuotaMenu"
 cp "$plugin_root/macos/Info.plist" "$contents_dir/Info.plist"

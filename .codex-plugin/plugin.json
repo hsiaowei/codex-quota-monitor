@@ -1,6 +1,6 @@
 {
   "name": "codex-quota-monitor",
-  "version": "8.0.0",
+  "version": "0.8.1",
   "description": "Display real Codex five-hour and weekly quota, local real-time tokens, official usage statistics, and reset times.",
   "author": {
     "name": "hsiaowei"

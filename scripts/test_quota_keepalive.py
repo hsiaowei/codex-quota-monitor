@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from argparse import Namespace
+from io import StringIO
 from unittest.mock import patch
 
 
@@ -147,6 +149,24 @@ class QuotaKeepaliveTests(unittest.TestCase):
                 "12345678-1234-1234-1234-123456789abc",
             ],
         )
+
+    def test_main_prints_triggered_for_native_notification_bridge(self):
+        arguments = Namespace(
+            weekly_remaining=100,
+            weekly_resets_at=9000,
+            five_hour_remaining=None,
+            five_hour_resets_at=None,
+            state_path=pathlib.Path("/unused/state.json"),
+        )
+        output = StringIO()
+        with (
+            patch.object(MODULE, "parse_args", return_value=arguments),
+            patch.object(MODULE, "run_once", return_value="triggered"),
+            patch.dict(MODULE.os.environ, {"CODEX_QUOTA_KEEPALIVE": "1"}),
+            patch("sys.stdout", output),
+        ):
+            self.assertEqual(MODULE.main(), 0)
+        self.assertEqual(output.getvalue(), "triggered\n")
 
 
 if __name__ == "__main__":
