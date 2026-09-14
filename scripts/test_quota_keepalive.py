@@ -52,7 +52,40 @@ class QuotaKeepaliveTests(unittest.TestCase):
             state = json.loads(path.read_text())
             self.assertEqual(state["windows"]["weekly"]["suppressUntil"], 8000)
 
-    def test_two_full_windows_share_one_request_and_keep_separate_resets(self):
+    def test_five_hour_below_one_hundred_blocks_full_weekly_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            calls = []
+            result = MODULE.run_once(
+                [
+                    MODULE.QuotaWindow("weekly", 100, 9000),
+                    MODULE.QuotaWindow("five-hour", 99, 4000),
+                ],
+                state_path=self.state_path(directory),
+                now=1000,
+                consumer=lambda: calls.append(True) or True,
+            )
+            self.assertEqual(result, "not-needed")
+            self.assertEqual(calls, [])
+
+    def test_full_five_hour_window_triggers_even_when_weekly_is_not_full(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.state_path(directory)
+            calls = []
+            result = MODULE.run_once(
+                [
+                    MODULE.QuotaWindow("weekly", 92, 9000),
+                    MODULE.QuotaWindow("five-hour", 100, 4000),
+                ],
+                state_path=path,
+                now=1000,
+                consumer=lambda: calls.append(True) or True,
+            )
+            self.assertEqual(result, "triggered")
+            self.assertEqual(len(calls), 1)
+            state = json.loads(path.read_text())
+            self.assertEqual(state["lastReasons"], ["five-hour"])
+
+    def test_five_hour_takes_priority_when_both_windows_are_full(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.state_path(directory)
             calls = []
@@ -68,31 +101,27 @@ class QuotaKeepaliveTests(unittest.TestCase):
             state = json.loads(path.read_text())
             self.assertEqual(result, "triggered")
             self.assertEqual(len(calls), 1)
-            self.assertEqual(state["lastReasons"], ["weekly", "five-hour"])
-            self.assertEqual(state["windows"]["weekly"]["suppressUntil"], 9000)
+            self.assertEqual(state["lastReasons"], ["five-hour"])
+            self.assertNotIn("weekly", state["windows"])
             self.assertEqual(state["windows"]["five-hour"]["suppressUntil"], 4000)
 
-    def test_weekly_cooldown_does_not_block_new_five_hour_window(self):
+    def test_existing_weekly_cooldown_does_not_block_new_five_hour_window(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.state_path(directory)
             calls = []
-            both = [
-                MODULE.QuotaWindow("weekly", 100, 9000),
-                MODULE.QuotaWindow("five-hour", 100, 4000),
-            ]
             MODULE.run_once(
-                both,
+                [MODULE.QuotaWindow("weekly", 100, 9000)],
                 state_path=path,
                 now=1000,
                 consumer=lambda: calls.append(True) or True,
             )
             result = MODULE.run_once(
                 [
-                    MODULE.QuotaWindow("weekly", 99, 9000),
+                    MODULE.QuotaWindow("weekly", 100, 9000),
                     MODULE.QuotaWindow("five-hour", 100, 7000),
                 ],
                 state_path=path,
-                now=4100,
+                now=1300,
                 consumer=lambda: calls.append(True) or True,
             )
             self.assertEqual(result, "triggered")
@@ -137,6 +166,8 @@ class QuotaKeepaliveTests(unittest.TestCase):
         exec_command = run.call_args_list[0].args[0]
         archive_command = run.call_args_list[1].args[0]
         self.assertIn("--json", exec_command)
+        self.assertIn("--model", exec_command)
+        self.assertEqual(exec_command[exec_command.index("--model") + 1], "gpt-5.5")
         self.assertIn("read-only", exec_command)
         self.assertIn("--skip-git-repo-check", exec_command)
         self.assertIn("--ignore-user-config", exec_command)

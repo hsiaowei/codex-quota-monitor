@@ -21,6 +21,7 @@ DEFAULT_STATE_PATH = (
     Path.home() / ".codex" / "codex-quota-monitor" / "quota-keepalive.json"
 )
 KEEPALIVE_PROMPT = "不要调用任何工具，只回复 OK。"
+KEEPALIVE_MODEL = "gpt-5.5"
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,8 @@ def build_exec_command(codex: str) -> list[str]:
         codex,
         "exec",
         "--json",
+        "--model",
+        KEEPALIVE_MODEL,
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
@@ -133,6 +136,9 @@ def save_state(path: Path, state: dict) -> None:
 
 
 def eligible_windows(windows: Sequence[QuotaWindow]) -> list[QuotaWindow]:
+    five_hour = next((window for window in windows if window.name == "five-hour"), None)
+    if five_hour is not None:
+        return [five_hour] if five_hour.remaining >= 99.9995 else []
     return [window for window in windows if window.remaining >= 99.9995]
 
 

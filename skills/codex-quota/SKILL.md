@@ -46,12 +46,13 @@ state. Tell the user to click the `C <percent>%` menu bar item to expand or
 collapse the quota panel. The panel opens below the item, refreshes
 automatically every five minutes, and has manual refresh and quit buttons.
 After any successful quota refresh—startup, manual, or the five-minute automatic
-refresh—the app launches one minimal real `codex exec` request when the official
-Codex weekly or five-hour remaining percentage is 100. This anchors an otherwise
-unused rolling window's reset time. If both windows are at 100, use one request
-for both. Track cooldowns separately for each window until its own reset so
-repeated refreshes do not consume again; retry a failed request no sooner than
-15 minutes.
+refresh—the app gives the official five-hour window priority. When that window
+is present, launch one minimal real `codex exec --model gpt-5.5` request only if
+its remaining percentage is 100; a weekly window at 100 must not trigger while
+the five-hour window is below 100. Only fall back to a 100-percent weekly window
+when the official response contains no five-hour window. Track cooldowns until
+the triggering window resets so repeated refreshes do not consume again; retry
+a failed request no sooner than 15 minutes.
 After the minimal request succeeds, deliver a native macOS notification telling
 the user that a 100% quota window was detected and one minimal Token consumption
 was completed to anchor the reset time. Never send this success notification for
@@ -74,7 +75,7 @@ command prints both the plugin version and the native menu bar app version/build
 ## Safety and accuracy
 
 - Never consume a rate-limit reset credit automatically.
-- The 100%-window keepalive must use `codex exec` with a read-only
+- The 100%-window keepalive must use `codex exec --model gpt-5.5` with a read-only
   sandbox, no tool calls, and a reply-only-`OK` prompt. Do not use an ephemeral
   session: archive the temporary session after completion so its numeric Token
   event remains available to today's local count. Persist only numeric attempt,
