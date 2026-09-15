@@ -50,7 +50,60 @@ class QuotaKeepaliveTests(unittest.TestCase):
             self.assertEqual(second, "cooldown")
             self.assertEqual(len(calls), 1)
             state = json.loads(path.read_text())
-            self.assertEqual(state["windows"]["weekly"]["suppressUntil"], 8000)
+            self.assertEqual(state["windows"]["weekly"]["suppressUntil"], 605800)
+
+    def test_stale_five_hour_reset_uses_full_window_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.state_path(directory)
+            calls = []
+            window = MODULE.QuotaWindow("five-hour", 100, 999)
+            self.assertEqual(
+                MODULE.run_once(
+                    [window],
+                    state_path=path,
+                    now=1000,
+                    consumer=lambda: calls.append(True) or True,
+                ),
+                "triggered",
+            )
+            self.assertEqual(
+                MODULE.run_once(
+                    [window],
+                    state_path=path,
+                    now=1900,
+                    consumer=lambda: calls.append(True) or True,
+                ),
+                "cooldown",
+            )
+            state = json.loads(path.read_text())
+            self.assertEqual(state["windows"]["five-hour"]["suppressUntil"], 19000)
+            self.assertEqual(len(calls), 1)
+
+    def test_missing_five_hour_reset_uses_full_window_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.state_path(directory)
+            result = MODULE.run_once(
+                [MODULE.QuotaWindow("five-hour", 100, None)],
+                state_path=path,
+                now=1000,
+                consumer=lambda: True,
+            )
+            state = json.loads(path.read_text())
+            self.assertEqual(result, "triggered")
+            self.assertEqual(state["windows"]["five-hour"]["suppressUntil"], 19000)
+
+    def test_later_official_reset_extends_success_cooldown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.state_path(directory)
+            result = MODULE.run_once(
+                [MODULE.QuotaWindow("five-hour", 100, 25000)],
+                state_path=path,
+                now=1000,
+                consumer=lambda: True,
+            )
+            state = json.loads(path.read_text())
+            self.assertEqual(result, "triggered")
+            self.assertEqual(state["windows"]["five-hour"]["suppressUntil"], 25000)
 
     def test_five_hour_below_one_hundred_blocks_full_weekly_window(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -103,7 +156,7 @@ class QuotaKeepaliveTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(state["lastReasons"], ["five-hour"])
             self.assertNotIn("weekly", state["windows"])
-            self.assertEqual(state["windows"]["five-hour"]["suppressUntil"], 4000)
+            self.assertEqual(state["windows"]["five-hour"]["suppressUntil"], 19000)
 
     def test_existing_weekly_cooldown_does_not_block_new_five_hour_window(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -127,8 +180,8 @@ class QuotaKeepaliveTests(unittest.TestCase):
             self.assertEqual(result, "triggered")
             self.assertEqual(len(calls), 2)
             state = json.loads(path.read_text())
-            self.assertEqual(state["windows"]["weekly"]["suppressUntil"], 9000)
-            self.assertEqual(state["windows"]["five-hour"]["suppressUntil"], 7000)
+            self.assertEqual(state["windows"]["weekly"]["suppressUntil"], 605800)
+            self.assertEqual(state["windows"]["five-hour"]["suppressUntil"], 19300)
 
     def test_failed_request_retries_after_fifteen_minutes(self):
         with tempfile.TemporaryDirectory() as directory:

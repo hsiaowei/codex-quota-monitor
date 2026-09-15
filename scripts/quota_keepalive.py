@@ -17,6 +17,10 @@ from typing import Callable, Sequence
 
 
 RETRY_COOLDOWN_SECONDS = 15 * 60
+SUCCESS_COOLDOWN_SECONDS = {
+    "five-hour": 5 * 60 * 60,
+    "weekly": 7 * 24 * 60 * 60,
+}
 DEFAULT_STATE_PATH = (
     Path.home() / ".codex" / "codex-quota-monitor" / "quota-keepalive.json"
 )
@@ -142,6 +146,19 @@ def eligible_windows(windows: Sequence[QuotaWindow]) -> list[QuotaWindow]:
     return [window for window in windows if window.remaining >= 99.9995]
 
 
+def successful_suppress_until(window: QuotaWindow, current_time: float) -> float:
+    minimum_cooldown = SUCCESS_COOLDOWN_SECONDS.get(
+        window.name, RETRY_COOLDOWN_SECONDS
+    )
+    official_reset = (
+        window.resets_at
+        if isinstance(window.resets_at, (int, float))
+        and window.resets_at > current_time
+        else 0
+    )
+    return max(current_time + minimum_cooldown, official_reset)
+
+
 def run_once(
     windows: Sequence[QuotaWindow],
     *,
@@ -202,12 +219,8 @@ def run_once(
             window_state["lastAttemptAt"] = current_time
             if succeeded:
                 window_state["lastSuccessAt"] = current_time
-                window_state["suppressUntil"] = max(
-                    current_time + RETRY_COOLDOWN_SECONDS,
-                    window.resets_at
-                    if isinstance(window.resets_at, (int, float))
-                    and window.resets_at > current_time
-                    else 0,
+                window_state["suppressUntil"] = successful_suppress_until(
+                    window, current_time
                 )
                 window_state.pop("lastFailureAt", None)
             else:

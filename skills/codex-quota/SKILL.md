@@ -51,8 +51,12 @@ is present, launch one minimal real `codex exec --model gpt-5.5` request only if
 its remaining percentage is 100; a weekly window at 100 must not trigger while
 the five-hour window is below 100. Only fall back to a 100-percent weekly window
 when the official response contains no five-hour window. Track cooldowns until
-the triggering window resets so repeated refreshes do not consume again; retry
-a failed request no sooner than 15 minutes.
+the triggering window resets so repeated refreshes do not consume again. After
+a successful request, suppress the five-hour window for at least five hours and
+the weekly fallback for at least seven days, extending to a later official
+future reset time when present. Never shorten a successful cooldown because
+`resetsAt` is stale, expired, or missing. Retry a failed request no sooner than
+15 minutes.
 After the minimal request succeeds, deliver a native macOS notification telling
 the user that a 100% quota window was detected and one minimal Token consumption
 was completed to anchor the reset time. Never send this success notification for
@@ -83,6 +87,11 @@ command prints both the plugin version and the native menu bar app version/build
   `~/.codex/codex-quota-monitor/quota-keepalive.json`; never save prompt,
   response, or authentication content. Honor `CODEX_QUOTA_KEEPALIVE=0` as an
   opt-out.
+- After a successful keepalive, enforce a minimum cooldown equal to the
+  triggering window duration: five hours for `five-hour`, seven days for the
+  `weekly` fallback. A valid later official `resetsAt` may extend that cooldown,
+  but stale, expired, or missing reset data must never reduce it. Keep the
+  15-minute cooldown only for failed requests.
 - Never open, print, copy, or parse Codex authentication files or tokens.
 - The app-server owns authentication and returns only account metadata and quota
   state needed for the report.
