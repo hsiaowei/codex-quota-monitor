@@ -1,6 +1,6 @@
 ---
 name: codex-quota
-description: Read and display the user's real Codex five-hour and weekly usage limits, estimated weekly-quota consumption accumulated today, local real-time tokens for today, official prior-workday usage, weekly and monthly token statistics, remaining percentages, reset times, plan, credit balance, and available rate-limit reset credits in chat or a native macOS menu bar popover. Use when the user asks about Codex quota, five-hour quota, today's weekly-quota consumption, today's tokens, yesterday's usage, weekly/monthly token statistics, usage allowance, weekly limits, remaining capacity, refresh/reset time, a quota menu bar item, or says 查看额度/五小时额度/5小时额度/今日周额度消耗/今日Tokens/昨日用量/周统计/月统计/周额度/额度刷新/打开额度菜单栏.
+description: Read and display the user's real Codex five-hour and weekly usage limits, estimated weekly-quota consumption accumulated today, local real-time tokens for today, official prior-workday usage, weekly and monthly token statistics, remaining percentages, reset times, plan, subscription-expiration status, credit balance, and available rate-limit reset credits in chat or a native macOS menu bar popover. Use when the user asks about Codex quota, five-hour quota, today's weekly-quota consumption, today's tokens, yesterday's usage, weekly/monthly token statistics, usage allowance, weekly limits, remaining capacity, refresh/reset time, subscription validity, a quota menu bar item, or says 查看额度/五小时额度/5小时额度/今日周额度消耗/今日Tokens/昨日用量/周统计/月统计/周额度/额度刷新/订阅有效期/打开额度菜单栏.
 ---
 
 # Codex Quota
@@ -42,8 +42,10 @@ python3 <plugin-root>/scripts/launch_menu_bar.py
 
 The command launches a native macOS menu bar app. It may require a narrowly
 scoped approval because it opens a local GUI and reads local Codex account
-state. Tell the user to click the `C <percent>%` menu bar item to expand or
-collapse the quota panel. The panel opens below the item, refreshes
+state. Tell the user to click the quota percentages in the menu bar to expand or
+collapse the quota panel. When both official windows exist, the status item uses
+the compact form `5h 82% · 周 94%`; when only one exists, show only that window.
+The panel opens below the item, refreshes
 automatically every five minutes, and has manual refresh and quit buttons.
 After any successful quota refresh—startup, manual, or the five-minute automatic
 refresh—the app gives the official five-hour window priority. When that window
@@ -73,8 +75,11 @@ python3 <plugin-root>/scripts/launch_menu_bar.py --stop
 
 When the repository's `scripts/codex-use.sh` has been linked as `codex-use`,
 the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
-`codex-use restart`, `codex-use status`, and `codex-use version`. The version
-command prints both the plugin version and the native menu bar app version/build.
+`codex-use restart`, `codex-use status`, `codex-use version`, and
+`codex-use subscription [1-31|clear]`. Setting or clearing the subscription day
+must automatically restart the menu bar app so the user never needs to run a
+second restart command. The version command prints both the plugin version and
+the native menu bar app version/build.
 
 ## Safety and accuracy
 
@@ -93,6 +98,23 @@ command prints both the plugin version and the native menu bar app version/build
   but stale, expired, or missing reset data must never reduce it. Keep the
   15-minute cooldown only for failed requests.
 - Never open, print, copy, or parse Codex authentication files or tokens.
+- Show the subscription-validity card above reset credits. Use an official
+  subscription-expiration field only when app-server actually returns one.
+  Never reinterpret `rateLimitResetCredits.credits[].expiresAt` as a plan or
+  subscription expiry. When app-server returns no subscription expiration,
+  display `暂无数据`. Local fallback accepts only a day-of-month from
+  `CODEX_QUOTA_SUBSCRIPTION_EXPIRY_DAY` or the app preference
+  `subscriptionExpiryDay`. Resolve a configured day smaller than today's day
+  into the next month; otherwise use the current month. Skip forward over a
+  month that does not contain that day, use the local calendar, include the
+  whole expiration date as valid, and display only `yyyy-MM-dd`. Identify this
+  value as local configuration. Full timestamps may be read only for backward
+  compatibility and must not be documented as the preferred setting.
+- Locate the Codex CLI from `CODEX_QUOTA_CODEX_PATH`, the process `PATH`,
+  standalone install locations such as `~/.local/bin`, Homebrew locations, and
+  both current and legacy CLI paths embedded in `Codex.app`. A stale legacy
+  `/usr/local/bin/codex` symlink must not prevent falling back to the current
+  bundled CLI.
 - The app-server owns authentication and returns only account metadata and quota
   state needed for the report.
 - Prefer the official `codex` entry in `rateLimitsByLimitId`, then the official

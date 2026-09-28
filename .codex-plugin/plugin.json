@@ -1,7 +1,7 @@
 {
   "name": "codex-quota-monitor",
-  "version": "0.8.3",
-  "description": "Display real Codex five-hour and weekly quota, local real-time tokens, official usage statistics, and reset times.",
+  "version": "0.9.1",
+  "description": "Display Codex five-hour and weekly quota, token statistics, reset times, and subscription-validity status.",
   "author": {
     "name": "hsiaowei"
   },
@@ -28,6 +28,7 @@
       "\u67e5\u770b Codex 5 \u5c0f\u65f6\u989d\u5ea6",
       "\u4eca\u5929\u4f7f\u7528\u4e86\u591a\u5c11 Tokens\uff1f",
       "\u67e5\u770b\u6628\u65e5\u3001\u5468\u548c\u6708 Tokens \u7edf\u8ba1",
+      "\u67e5\u770b\u8ba2\u9605\u6709\u6548\u671f",
       "\u5237\u65b0 Codex \u989d\u5ea6\u72b6\u6001"
     ],
     "brandColor": "#10A37F",

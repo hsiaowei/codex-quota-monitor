@@ -26,6 +26,15 @@ DEFAULT_STATE_PATH = (
 )
 KEEPALIVE_PROMPT = "不要调用任何工具，只回复 OK。"
 KEEPALIVE_MODEL = "gpt-5.5"
+CODEX_CLI_CANDIDATES = (
+    "~/.local/bin/codex",
+    "/usr/local/bin/codex",
+    "/opt/homebrew/bin/codex",
+    "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+    "/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+)
 
 
 @dataclass(frozen=True)
@@ -36,12 +45,10 @@ class QuotaWindow:
 
 
 def find_codex() -> str | None:
-    configured = os.environ.get("CODEX_QUOTA_CODEX_PATH")
     candidates = [
-        configured,
+        os.environ.get("CODEX_QUOTA_CODEX_PATH"),
         shutil.which("codex"),
-        "/usr/local/bin/codex",
-        "/opt/homebrew/bin/codex",
+        *(str(Path(path).expanduser()) for path in CODEX_CLI_CANDIDATES),
     ]
     for candidate in candidates:
         if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):

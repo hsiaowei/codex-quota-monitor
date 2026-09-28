@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 MODULE_PATH = pathlib.Path(__file__).with_name("codex_quota.py")
 CODEX_USE_PATH = pathlib.Path(__file__).with_name("codex-use.sh")
+MACOS_SOURCE_PATH = pathlib.Path(__file__).parent.parent / "macos" / "CodexQuotaMenu.m"
+SUBSCRIPTION_HEADER_PATH = pathlib.Path(__file__).parent.parent / "macos" / "SubscriptionExpiry.h"
 SPEC = importlib.util.spec_from_file_location("codex_quota", MODULE_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
@@ -71,6 +73,33 @@ FIXTURE = {
 
 
 class QuotaTests(unittest.TestCase):
+    def test_find_codex_uses_bundled_cli_when_path_and_legacy_links_are_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundled = pathlib.Path(directory) / "codex"
+            bundled.write_text("#!/bin/sh\n", encoding="utf-8")
+            bundled.chmod(0o755)
+            with (
+                patch.dict(MODULE.os.environ, {}, clear=True),
+                patch.object(MODULE.shutil, "which", return_value=None),
+                patch.object(MODULE, "CODEX_CLI_CANDIDATES", (str(bundled),)),
+            ):
+                self.assertEqual(MODULE.find_codex(), str(bundled))
+
+    def test_find_codex_prefers_explicit_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            configured = pathlib.Path(directory) / "custom-codex"
+            configured.write_text("#!/bin/sh\n", encoding="utf-8")
+            configured.chmod(0o755)
+            with (
+                patch.dict(
+                    MODULE.os.environ,
+                    {"CODEX_QUOTA_CODEX_PATH": str(configured)},
+                    clear=True,
+                ),
+                patch.object(MODULE.shutil, "which", return_value=None),
+            ):
+                self.assertEqual(MODULE.find_codex(), str(configured))
+
     def test_codex_use_version_reports_plugin_and_app_versions(self):
         result = subprocess.run(
             ["/bin/sh", str(CODEX_USE_PATH), "version"],
@@ -78,8 +107,8 @@ class QuotaTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertIn("codex-quota-monitor v0.8.3", result.stdout)
-        self.assertIn("CodexQuotaMenu v0.8.3 (build 16)", result.stdout)
+        self.assertIn("codex-quota-monitor v0.9.1", result.stdout)
+        self.assertIn("CodexQuotaMenu v0.9.1 (build 19)", result.stdout)
 
     def test_codex_use_help_lists_version_command(self):
         result = subprocess.run(
@@ -89,6 +118,107 @@ class QuotaTests(unittest.TestCase):
             text=True,
         )
         self.assertIn("version", result.stdout)
+        self.assertIn("subscription", result.stdout)
+
+    def test_codex_use_rejects_invalid_subscription_day(self):
+        result = subprocess.run(
+            ["/bin/sh", str(CODEX_USE_PATH), "subscription", "0"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("1 到 31", result.stderr)
+
+    def test_codex_use_subscription_changes_restart_automatically(self):
+        source = CODEX_USE_PATH.read_text(encoding="utf-8")
+        self.assertIn("restart_menu_bar()", source)
+        self.assertGreaterEqual(source.count("restart_menu_bar"), 4)
+        self.assertNotIn("请运行 codex-use restart 让菜单栏立即更新", source)
+
+    def test_menu_bar_compacts_five_hour_and_weekly_remaining_percentages(self):
+        source = MACOS_SOURCE_PATH.read_text(encoding="utf-8")
+        self.assertIn('@"5h %.0f%% · 周 %.0f%%"', source)
+        self.assertIn("applyObservationToStatusItem", source)
+        self.assertIn('_latestSnapshot = snapshot;', source)
+
+    def test_subscription_card_does_not_reuse_reset_credit_expiration(self):
+        source = MACOS_SOURCE_PATH.read_text(encoding="utf-8")
+        self.assertIn('@"订阅有效期 暂无数据"', source)
+        self.assertIn('@"subscriptionExpiresAt"', source)
+        self.assertIn('@"CODEX_QUOTA_SUBSCRIPTION_EXPIRY_DAY"', source)
+        self.assertIn('@"subscriptionExpiryDay"', source)
+        self.assertIn('subscriptionFormatter.dateFormat = @"yyyy-MM-dd";', source)
+        self.assertNotIn('resetInfo[@"expiresAt"]', source)
+
+    def test_subscription_day_resolution_uses_local_calendar_rules(self):
+        source = r'''
+#import <Foundation/Foundation.h>
+#import "SubscriptionExpiry.h"
+
+static NSDate *Parse(NSString *value) {
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    formatter.timeZone = [NSTimeZone timeZoneWithName:@"Asia/Shanghai"];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm";
+    return [formatter dateFromString:value];
+}
+
+static NSString *Format(NSDate *value) {
+    if (!value) return @"nil";
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    formatter.timeZone = [NSTimeZone timeZoneWithName:@"Asia/Shanghai"];
+    formatter.dateFormat = @"yyyy-MM-dd";
+    return [formatter stringFromDate:value];
+}
+
+int main(void) {
+    @autoreleasepool {
+        setenv("TZ", "Asia/Shanghai", 1);
+        [NSTimeZone resetSystemTimeZone];
+        NSDate *september28 = Parse(@"2026-09-28 12:00");
+        NSDate *nextMonth = CQMSubscriptionExpirationForDay(17, september28);
+        NSDate *currentMonth = CQMSubscriptionExpirationForDay(29, september28);
+        printf("%s|%ld\n", Format(nextMonth).UTF8String,
+               (long)CQMSubscriptionRemainingDays(nextMonth, september28));
+        printf("%s|%ld\n", Format(currentMonth).UTF8String,
+               (long)CQMSubscriptionRemainingDays(currentMonth, september28));
+        printf("%s\n", Format(CQMSubscriptionExpirationForDay(17, Parse(@"2026-12-31 12:00"))).UTF8String);
+        printf("%s\n", Format(CQMSubscriptionExpirationForDay(30, Parse(@"2026-01-31 12:00"))).UTF8String);
+        printf("%s\n", Format(CQMSubscriptionExpirationForDay(0, september28)).UTF8String);
+    }
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "subscription-expiry-test"
+            compile_result = subprocess.run(
+                [
+                    "xcrun",
+                    "clang",
+                    "-fobjc-arc",
+                    "-framework",
+                    "Foundation",
+                    "-I",
+                    str(SUBSCRIPTION_HEADER_PATH.parent),
+                    "-x",
+                    "objective-c",
+                    "-",
+                    "-o",
+                    str(binary),
+                ],
+                input=source,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["2026-10-17|20", "2026-09-29|2", "2027-01-17", "2026-03-30", "nil"],
+        )
 
     def test_extracts_weekly_window(self):
         windows = MODULE.extract_windows(FIXTURE["limits"])

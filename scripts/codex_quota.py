@@ -18,11 +18,20 @@ from pathlib import Path
 from typing import Any
 
 
-CLIENT_VERSION = "0.8.3"
+CLIENT_VERSION = "0.9.1"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 CACHE_VERSION = 1
 DAILY_QUOTA_CACHE_VERSION = 1
 LOCAL_TOKEN_CACHE_VERSION = 1
+CODEX_CLI_CANDIDATES = (
+    "~/.local/bin/codex",
+    "/usr/local/bin/codex",
+    "/opt/homebrew/bin/codex",
+    "/Applications/Codex.app/Contents/Resources/codex-cli/bin/codex",
+    "/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+    "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+)
 
 
 class QuotaError(RuntimeError):
@@ -41,6 +50,18 @@ class Window:
     @property
     def remaining_percent(self) -> float:
         return max(0.0, min(100.0, 100.0 - self.used_percent))
+
+
+def find_codex() -> str | None:
+    candidates = [
+        os.environ.get("CODEX_QUOTA_CODEX_PATH"),
+        shutil.which("codex"),
+        *(str(Path(path).expanduser()) for path in CODEX_CLI_CANDIDATES),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def _send(proc: subprocess.Popen[str], payload: dict[str, Any]) -> None:
@@ -96,12 +117,7 @@ def _result(response: dict[str, Any], label: str) -> dict[str, Any]:
 
 
 def fetch_live_data(timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> dict[str, Any]:
-    codex = shutil.which("codex")
-    if not codex:
-        for candidate in ("/usr/local/bin/codex", "/opt/homebrew/bin/codex"):
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                codex = candidate
-                break
+    codex = find_codex()
     if not codex:
         raise QuotaError("找不到 codex 命令，请先安装或更新 Codex CLI。")
 

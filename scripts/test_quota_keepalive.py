@@ -23,6 +23,18 @@ class QuotaKeepaliveTests(unittest.TestCase):
     def state_path(self, directory: str) -> pathlib.Path:
         return pathlib.Path(directory) / "quota-keepalive.json"
 
+    def test_find_codex_uses_bundled_cli_when_path_and_legacy_links_are_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bundled = pathlib.Path(directory) / "codex"
+            bundled.write_text("#!/bin/sh\n", encoding="utf-8")
+            bundled.chmod(0o755)
+            with (
+                patch.dict(MODULE.os.environ, {}, clear=True),
+                patch.object(MODULE.shutil, "which", return_value=None),
+                patch.object(MODULE, "CODEX_CLI_CANDIDATES", (str(bundled),)),
+            ):
+                self.assertEqual(MODULE.find_codex(), str(bundled))
+
     def test_does_not_consume_below_one_hundred_percent_remaining(self):
         with tempfile.TemporaryDirectory() as directory:
             calls = []
