@@ -47,6 +47,13 @@ collapse the quota panel. When both official windows exist, the status item uses
 the compact form `5h 82% · 周 94%`; when only one exists, show only that window.
 The panel opens below the item, refreshes
 automatically every five minutes, and has manual refresh and quit buttons.
+When the bundled `SessionStart` hook has been reviewed and trusted, it starts
+the menu bar app asynchronously for local macOS sessions whose start source is
+`startup` or `resume`. It must first check for an existing `CodexQuotaMenu`
+process and skip launching when one already exists. Hook failure must never
+block or fail the Codex session. The user can review, trust, or disable the hook
+with `/hooks`; installing or enabling the plugin must not be described as
+implicitly trusting it.
 After any successful quota refresh—startup, manual, or the five-minute automatic
 refresh—the app gives the official five-hour window priority. When that window
 is present, launch one minimal real `codex exec --model gpt-5.5` request only if
