@@ -110,7 +110,8 @@ command prints both the plugin version and the native menu bar app version/build
   login-token expiration, not the subscription expiration. Display
   `暂无数据` when the dedicated claim is missing or invalid. Do not provide or
   document a manual subscription-date override. Use the local calendar for the
-  inclusive remaining-day count and display only `yyyy-MM-dd`.
+  inclusive remaining-day count and display the local expiration time through
+  the minute as `yyyy-MM-dd HH:mm`.
 - Locate the Codex CLI from `CODEX_QUOTA_CODEX_PATH`, the process `PATH`,
   standalone install locations such as `~/.local/bin`, Homebrew locations, and
   both current and legacy CLI paths embedded in `Codex.app`. A stale legacy

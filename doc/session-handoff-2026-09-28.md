@@ -14,8 +14,8 @@ GitHub：<https://github.com/hsiaowei/codex-quota-monitor>
 
 - `v0.9.1` 在 `v0.9.0` CLI 路径兼容修复基础上增加订阅有效期卡片和菜单栏双额度显示；订阅日期已改为自动从登录 JWT 的专用 claim 读取，不再手动设置。
 - 本次发布流程会把 `v0.9.1` 提交并推送到 GitHub 的 `origin/main`。
-- 本机 Codex 插件缓存已经重新安装为 `0.9.1+codex.20260928062458`。
-- 原生菜单栏程序当前构建号为 `CodexQuotaMenu v0.9.1 (build 20)`。
+- 本机 Codex 插件缓存已经重新安装为 `0.9.1+codex.20260928063352`。
+- 原生菜单栏程序当前构建号为 `CodexQuotaMenu v0.9.1 (build 21)`。
 - 当前受限执行环境无法连接 macOS LaunchServices，自动打开应用返回 `kLSServerCommunicationErr`；源码与应用已构建完成，回到普通终端运行 `codex-use restart` 即可启动。
 - 46 项 Python 单元测试全部通过，插件清单校验和 Skill 校验均通过，`git diff --check` 通过。
 - 当前受限执行环境无法连接 macOS LaunchServices，因此无法在本会话内真正打开菜单栏应用。用户需要在普通 macOS 终端执行 `codex-use restart`。
@@ -99,12 +99,12 @@ GitHub：<https://github.com/hsiaowei/codex-quota-monitor>
 ### 4.7 订阅有效期卡片（v0.9.1）
 
 - 卡片位于 5 小时额度区块下方、“额度重置券”上方，并用细分隔线与额度区块分开。
-- 视觉采用浅绿色圆角卡片：日历图标、左侧“订阅有效期 N天”、右侧本地日期 `yyyy-MM-dd`。
+- 视觉采用浅绿色圆角卡片：日历图标、左侧“订阅有效期 N天”、右侧本地时间 `yyyy-MM-dd HH:mm`。
 - 当前官方 app-server 的 `account/read` 和 `account/rateLimits/read` 没有承诺返回 Plus/Pro 订阅到期日；缺少数据时必须显示“暂无数据”。
 - `rateLimitResetCredits.credits[].expiresAt` 只属于额度重置券，严禁把它显示成订阅到期日。
 - 官方字段优先；缺少官方字段时，读取 `~/.codex/auth.json` 的 `tokens.id_token`，只解析 `https://api.openai.com/auth.chatgpt_subscription_active_until`。
 - 明确忽略 JWT 的普通 `exp` 字段；它是登录令牌到期时间，不是订阅到期日。JWT 与其他 claims 不输出、不缓存、不记录日志。
-- 已移除手动日期、环境变量和应用偏好设置入口；到期日当天仍计为有效，界面只显示 `yyyy-MM-dd`。
+- 已移除手动日期、环境变量和应用偏好设置入口；到期日当天仍计为有效，界面以本地时区显示到分钟 `yyyy-MM-dd HH:mm`。
 
 ## 5. 最小 Token 请求规则
 
@@ -267,15 +267,15 @@ Skill is valid!
 - marketplace：`codex-quota-monitor-local`
 - marketplace 根目录：`/Users/hsiaowei/Workspace/codex-quota-monitor`
 - 已安装插件：`codex-quota-monitor@codex-quota-monitor-local`
-- 已安装缓存版本：`0.9.1+codex.20260928062458`
-- 安装缓存目录：`~/.codex/plugins/cache/codex-quota-monitor-local/codex-quota-monitor/0.9.1+codex.20260928062458`
+- 已安装缓存版本：`0.9.1+codex.20260928063352`
+- 安装缓存目录：`~/.codex/plugins/cache/codex-quota-monitor-local/codex-quota-monitor/0.9.1+codex.20260928063352`
 - 源码正式版本保持 `0.9.1`，不会把一次性 cachebuster 写回正式版本号。
 - `codex-use` 路径：`/usr/local/bin/codex-use`
 - `codex-use version` 输出：
 
 ```text
 codex-quota-monitor v0.9.1
-CodexQuotaMenu v0.9.1 (build 20)
+CodexQuotaMenu v0.9.1 (build 21)
 ```
 
 插件安装或更新后，需要新建 Codex 会话才能加载新 Skill；旧会话不会中途重新载入插件。

@@ -251,7 +251,7 @@ codex-use version
 
 ```text
 codex-quota-monitor v0.9.1
-CodexQuotaMenu v0.9.1 (build 20)
+CodexQuotaMenu v0.9.1 (build 21)
 ```
 
 ### 强制重建并重启
@@ -320,7 +320,7 @@ python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --rebui
 
 ### 订阅有效期
 
-额度弹窗会在“额度重置券”上方显示浅绿色订阅有效期卡片，左侧显示剩余天数，右侧只显示本地日期 `yyyy-MM-dd`。无需手动设置到期日。
+额度弹窗会在“额度重置券”上方显示浅绿色订阅有效期卡片，左侧显示剩余天数，右侧以本地时区显示精确到分钟的到期时间 `yyyy-MM-dd HH:mm`。无需手动设置到期日。
 
 读取顺序如下：
 

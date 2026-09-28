@@ -1190,12 +1190,12 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     }
 
     _subscriptionLabel = [self label:@"订阅有效期 暂无数据" size:13 weight:NSFontWeightSemibold color:QuotaGreen()];
-    _subscriptionLabel.frame = NSMakeRect(44, 15, 156, 20);
+    _subscriptionLabel.frame = NSMakeRect(44, 15, 120, 20);
     [_subscriptionCard addSubview:_subscriptionLabel];
 
     _subscriptionDateLabel = [self label:@"读取中…" size:12 weight:NSFontWeightRegular color:QuotaMuted()];
     _subscriptionDateLabel.alignment = NSTextAlignmentRight;
-    _subscriptionDateLabel.frame = NSMakeRect(194, 15, 110, 20);
+    _subscriptionDateLabel.frame = NSMakeRect(164, 15, 140, 20);
     [_subscriptionCard addSubview:_subscriptionDateLabel];
 
     _creditsLabel = [self label:@"额度重置券：--" size:11 weight:NSFontWeightRegular color:QuotaMuted()];
@@ -1372,7 +1372,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
             : @"订阅已到期";
         NSDateFormatter *subscriptionFormatter = [[NSDateFormatter alloc] init];
         subscriptionFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"zh_CN"];
-        subscriptionFormatter.dateFormat = @"yyyy-MM-dd";
+        subscriptionFormatter.dateFormat = @"yyyy-MM-dd HH:mm";
         _subscriptionDateLabel.stringValue = [subscriptionFormatter stringFromDate:expiration];
         NSColor *accent = active ? QuotaGreen() : QuotaRed();
         _subscriptionLabel.textColor = accent;

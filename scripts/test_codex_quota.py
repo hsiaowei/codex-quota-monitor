@@ -108,7 +108,7 @@ class QuotaTests(unittest.TestCase):
             text=True,
         )
         self.assertIn("codex-quota-monitor v0.9.1", result.stdout)
-        self.assertIn("CodexQuotaMenu v0.9.1 (build 20)", result.stdout)
+        self.assertIn("CodexQuotaMenu v0.9.1 (build 21)", result.stdout)
 
     def test_codex_use_help_lists_version_command(self):
         result = subprocess.run(
@@ -135,7 +135,7 @@ class QuotaTests(unittest.TestCase):
         self.assertIn('@"source": @"jwt"', source)
         self.assertNotIn('CODEX_QUOTA_SUBSCRIPTION_EXPIRY_DAY', source)
         self.assertNotIn('subscriptionExpiryDay', source)
-        self.assertIn('subscriptionFormatter.dateFormat = @"yyyy-MM-dd";', source)
+        self.assertIn('subscriptionFormatter.dateFormat = @"yyyy-MM-dd HH:mm";', source)
         self.assertNotIn('resetInfo[@"expiresAt"]', source)
 
     def test_subscription_expiration_reads_only_dedicated_jwt_claim(self):
@@ -157,7 +157,7 @@ static NSString *Format(NSDate *value) {
     formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
     formatter.timeZone = [NSTimeZone timeZoneWithName:@"Asia/Shanghai"];
-    formatter.dateFormat = @"yyyy-MM-dd";
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm";
     return [formatter stringFromDate:value];
 }
 
@@ -219,7 +219,7 @@ int main(void) {
             result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
         self.assertEqual(
             result.stdout.splitlines(),
-            ["2026-10-27", "2026-10-27", "nil", "nil"],
+            ["2026-10-27 09:17", "2026-10-27 09:17", "nil", "nil"],
         )
 
     def test_extracts_weekly_window(self):
