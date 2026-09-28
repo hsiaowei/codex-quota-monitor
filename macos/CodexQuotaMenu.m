@@ -1,7 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <UserNotifications/UserNotifications.h>
-#import <math.h>
-#import "SubscriptionExpiry.h"
+#import "JWTSubscription.h"
 
 static NSColor *QuotaGreen(void) {
     return [NSColor colorWithCalibratedRed:0.063 green:0.639 blue:0.498 alpha:1.0];
@@ -110,24 +109,6 @@ static NSNumber *QuotaTimestampFromValue(id value) {
     return timestamp > 0 ? @(timestamp) : nil;
 }
 
-static NSNumber *QuotaSubscriptionDayFromValue(id value) {
-    NSInteger day = 0;
-    if ([value isKindOfClass:NSNumber.class]) {
-        double numeric = [value doubleValue];
-        day = [value integerValue];
-        if (!isfinite(numeric) || numeric != (double)day) return nil;
-    } else if ([value isKindOfClass:NSString.class]) {
-        NSString *text = [(NSString *)value stringByTrimmingCharactersInSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (text.length == 0) return nil;
-        NSScanner *scanner = [NSScanner scannerWithString:text];
-        if (![scanner scanInteger:&day] || !scanner.isAtEnd) return nil;
-    } else {
-        return nil;
-    }
-    return day >= 1 && day <= 31 ? @(day) : nil;
-}
-
 static NSDictionary *QuotaSubscriptionInfo(NSDictionary *accountResult,
                                             NSDictionary *account,
                                             NSDictionary *bucket) {
@@ -151,31 +132,11 @@ static NSDictionary *QuotaSubscriptionInfo(NSDictionary *accountResult,
         if (timestamp) return @{ @"expiresAt": timestamp, @"source": @"official" };
     }
 
-    NSString *environmentDay = NSProcessInfo.processInfo.environment[@"CODEX_QUOTA_SUBSCRIPTION_EXPIRY_DAY"];
-    NSNumber *configuredDay = QuotaSubscriptionDayFromValue(environmentDay);
-    if (!configuredDay) {
-        configuredDay = QuotaSubscriptionDayFromValue(
-            [NSUserDefaults.standardUserDefaults objectForKey:@"subscriptionExpiryDay"]);
-    }
-    NSDate *localExpiration = configuredDay
-        ? CQMSubscriptionExpirationForDay(configuredDay.integerValue, NSDate.date)
+    NSString *authPath = [QuotaCodexHome() stringByAppendingPathComponent:@"auth.json"];
+    NSDate *jwtExpiration = CQMSubscriptionExpirationFromAuthFile(authPath);
+    return jwtExpiration
+        ? @{ @"expiresAt": @(jwtExpiration.timeIntervalSince1970), @"source": @"jwt" }
         : nil;
-    if (localExpiration) {
-        return @{
-            @"expiresAt": @(localExpiration.timeIntervalSince1970),
-            @"source": @"local",
-            @"configuredDay": configuredDay
-        };
-    }
-
-    // Backward compatibility for installs that configured a full timestamp
-    // before the day-only preference was introduced.
-    NSString *environmentValue = NSProcessInfo.processInfo.environment[@"CODEX_QUOTA_SUBSCRIPTION_EXPIRES_AT"];
-    id configured = environmentValue.length > 0
-        ? environmentValue
-        : [NSUserDefaults.standardUserDefaults objectForKey:@"subscriptionExpiresAt"];
-    NSNumber *timestamp = QuotaTimestampFromValue(configured);
-    return timestamp ? @{ @"expiresAt": timestamp, @"source": @"local" } : nil;
 }
 
 static NSString *QuotaStatusTitle(NSDictionary *snapshot) {
@@ -1217,7 +1178,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     _subscriptionCard.layer.borderWidth = 1;
     _subscriptionCard.layer.borderColor = [NSColor colorWithCalibratedRed:0.64 green:0.88 blue:0.79 alpha:1].CGColor;
     _subscriptionCard.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.92 green:0.98 blue:0.96 alpha:1].CGColor;
-    _subscriptionCard.toolTip = @"官方 app-server 当前未提供订阅到期日；可使用本机配置补充真实日期。";
+    _subscriptionCard.toolTip = @"自动读取本机 Codex 登录 JWT 中的订阅到期声明。";
     [self.view addSubview:_subscriptionCard];
 
     NSImage *calendarImage = [NSImage imageWithSystemSymbolName:@"calendar" accessibilityDescription:@"订阅有效期"];
@@ -1232,7 +1193,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     _subscriptionLabel.frame = NSMakeRect(44, 15, 156, 20);
     [_subscriptionCard addSubview:_subscriptionLabel];
 
-    _subscriptionDateLabel = [self label:@"官方未提供" size:12 weight:NSFontWeightRegular color:QuotaMuted()];
+    _subscriptionDateLabel = [self label:@"读取中…" size:12 weight:NSFontWeightRegular color:QuotaMuted()];
     _subscriptionDateLabel.alignment = NSTextAlignmentRight;
     _subscriptionDateLabel.frame = NSMakeRect(194, 15, 110, 20);
     [_subscriptionCard addSubview:_subscriptionDateLabel];
@@ -1418,18 +1379,18 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         _subscriptionDateLabel.textColor = active ? QuotaText() : QuotaRed();
         _subscriptionCard.layer.borderColor = [accent colorWithAlphaComponent:0.45].CGColor;
         _subscriptionCard.layer.backgroundColor = [accent colorWithAlphaComponent:0.08].CGColor;
-        BOOL local = [snapshot[@"subscriptionExpirationSource"] isEqual:@"local"];
-        _subscriptionCard.toolTip = local
-            ? @"订阅到期时间来自本机配置。"
+        BOOL jwt = [snapshot[@"subscriptionExpirationSource"] isEqual:@"jwt"];
+        _subscriptionCard.toolTip = jwt
+            ? @"订阅到期时间来自本机 Codex 登录 JWT 的订阅声明。"
             : @"订阅到期时间来自官方账号数据。";
     } else {
         _subscriptionLabel.stringValue = @"订阅有效期 暂无数据";
         _subscriptionLabel.textColor = QuotaGreen();
-        _subscriptionDateLabel.stringValue = @"官方未提供";
+        _subscriptionDateLabel.stringValue = @"暂无数据";
         _subscriptionDateLabel.textColor = QuotaMuted();
         _subscriptionCard.layer.borderColor = [NSColor colorWithCalibratedRed:0.64 green:0.88 blue:0.79 alpha:1].CGColor;
         _subscriptionCard.layer.backgroundColor = [NSColor colorWithCalibratedRed:0.92 green:0.98 blue:0.96 alpha:1].CGColor;
-        _subscriptionCard.toolTip = @"官方 app-server 当前未提供订阅到期日；可使用本机配置补充真实日期。";
+        _subscriptionCard.toolTip = @"未能从官方账号数据或本机 Codex 登录 JWT 读取订阅到期日。";
     }
 
     NSString *resetCredits = snapshot[@"resetCredits"] ? [NSString stringWithFormat:@"%@ 次", snapshot[@"resetCredits"]] : @"未知";

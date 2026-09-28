@@ -2,6 +2,8 @@
 
 `codex-quota-monitor` 是一个适用于 macOS 的 Codex 额度监控插件，可在原生菜单栏弹窗和 Codex 对话中显示真实 5 小时额度、周额度、刷新时间以及 Token 使用统计。
 
+当前版本：`v0.9.1`。支持 macOS 13 及更高版本；菜单栏应用会在本机从源码编译，可用于 Apple Silicon（M 系列）和 Intel Mac。
+
 仓库地址：[github.com/hsiaowei/codex-quota-monitor](https://github.com/hsiaowei/codex-quota-monitor)
 
 <img width="381" height="405" alt="image" src="https://github.com/user-attachments/assets/4644852e-b345-4da5-96ca-6bd96dfd076e" />
@@ -17,7 +19,7 @@
 - 昨日官方 Tokens；如果昨日是周六或周日，则显示上周五
 - 本周与本月 Tokens：官方历史数据 + 今日本机实时数据
 - ChatGPT 套餐、credits 余额和额度重置券
-- 在额度重置券上方显示订阅有效期卡片；官方未提供到期日时明确显示“暂无数据”，也可使用本机配置补充真实日期
+- 在额度重置券上方显示订阅有效期卡片；自动读取本机 Codex 登录 JWT 的订阅到期声明，无需手动设置日期
 - 官方用量接口不可用时，自动显示上次成功获取的本机缓存
 - 启动、手动或每 5 分钟刷新发现 5 小时额度或周额度仍为 100% 时，自动发起一次最小 Codex 请求，固定未使用额度窗口的重置时间，并在成功后弹出 macOS 系统提醒
 - Token 不足 1 亿时以“万”显示；达到 1 亿后按“亿 + 万”分段显示，例如 `1亿2345.6万`。余下的万数为 0 时直接显示 `2亿`，小数保留一位并四舍五入
@@ -195,7 +197,7 @@ codex plugin list
 
 ### 3.1 展开和收起
 
-点击 macOS 顶部菜单栏的 `C 剩余百分比` 即可展开额度窗口。再次点击，或点击窗口外部，可收起窗口。
+点击 macOS 顶部菜单栏的额度百分比（例如 `5h 82% · 周 94%`）即可展开额度窗口。再次点击，或点击窗口外部，可收起窗口。
 
 ### 3.2 手动刷新
 
@@ -249,27 +251,8 @@ codex-use version
 
 ```text
 codex-quota-monitor v0.9.1
-CodexQuotaMenu v0.9.1 (build 19)
+CodexQuotaMenu v0.9.1 (build 20)
 ```
-
-### 设置订阅到期日
-
-只需要设置每月的日期数字（1–31），不需要输入年月和时间：
-
-```bash
-codex-use subscription 17
-```
-
-设置成功后会自动重启 Codex 额度菜单栏并立即生效，无需再手动执行 `codex-use restart`。
-
-查看或清除设置：
-
-```bash
-codex-use subscription
-codex-use subscription clear
-```
-
-清除设置后也会自动重启菜单栏。
 
 ### 强制重建并重启
 
@@ -337,25 +320,15 @@ python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --rebui
 
 ### 订阅有效期
 
-额度弹窗会在“额度重置券”上方显示浅绿色订阅有效期卡片，左侧显示剩余天数，右侧只显示本地日期 `yyyy-MM-dd`。当前官方 `account/read` 和 `account/rateLimits/read` 协议只提供套餐类型，没有承诺返回 Plus/Pro 的订阅到期日，因此没有数据时会显示“暂无数据”，不会把额度重置券的 `expiresAt` 错当成订阅到期日。
+额度弹窗会在“额度重置券”上方显示浅绿色订阅有效期卡片，左侧显示剩余天数，右侧只显示本地日期 `yyyy-MM-dd`。无需手动设置到期日。
 
-如果已经知道真实订阅到期日，只设置日期数字（1–31）：
+读取顺序如下：
 
-```bash
-codex-use subscription 17
-```
+1. 如果未来 `account/read` 或 `account/rateLimits/read` 直接返回订阅到期字段，优先使用官方接口值。
+2. 否则读取 `~/.codex/auth.json` 中的 `tokens.id_token`，仅在内存中解码 JWT payload，并读取 `https://api.openai.com/auth.chatgpt_subscription_active_until`。
+3. 找不到该 claim、JWT 格式无效或尚未使用 ChatGPT 登录时显示“暂无数据”。
 
-设置或清除订阅到期日后，`codex-use` 会自动重启菜单栏组件，无需额外执行重启命令。
-
-插件按本地日历自动确定月份：设置值小于今天的日期数字时属于下个月，否则属于本月。例如今天是 `2026-09-28`，设置 `17` 得到 `2026-10-17`，设置 `29` 得到 `2026-09-29`；设置值与今天相同则表示今天。若目标月份不存在该日期（例如 2 月 30 日），会顺延到下一个真正包含该日期的月份。到期日当天仍计为有效，界面只显示日期，不显示时分秒。
-
-需要清除本机配置时执行：
-
-```bash
-codex-use subscription clear
-```
-
-也可在启动菜单栏程序前临时设置 `CODEX_QUOTA_SUBSCRIPTION_EXPIRY_DAY=17`。如果未来官方接口返回订阅到期字段，官方值优先于本机配置。旧版的完整时间配置仅保留兼容读取，不再作为推荐设置方式。
+插件明确忽略 JWT 的普通 `exp` 字段，因为它表示登录令牌到期时间，不是 Plus/Pro 订阅到期日；也不会把额度重置券的 `expiresAt` 当成订阅有效期。JWT、认证文件内容和其他 claims 不会输出、缓存或写入日志，组件只保留解析出的订阅到期时间用于当前界面显示。
 
 ### 今日 Tokens
 
@@ -541,6 +514,7 @@ sudo unlink /usr/local/bin/codex-use
 | 停止菜单栏 | `codex-use stop` |
 | 重启菜单栏 | `codex-use restart` |
 | 查看状态 | `codex-use status` |
+| 查看版本 | `codex-use version` |
 | 查看额度 | `python3 "$HOME/Workspace/codex-quota-monitor/scripts/codex_quota.py"` |
 | 更新源码 | `git -C "$HOME/Workspace/codex-quota-monitor" pull --ff-only` |
 | 重新安装 | 先 `codex plugin remove codex-quota-monitor@codex-quota-monitor-local`，再运行安装命令 |

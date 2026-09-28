@@ -75,11 +75,8 @@ python3 <plugin-root>/scripts/launch_menu_bar.py --stop
 
 When the repository's `scripts/codex-use.sh` has been linked as `codex-use`,
 the equivalent user-facing commands are `codex-use start`, `codex-use stop`,
-`codex-use restart`, `codex-use status`, `codex-use version`, and
-`codex-use subscription [1-31|clear]`. Setting or clearing the subscription day
-must automatically restart the menu bar app so the user never needs to run a
-second restart command. The version command prints both the plugin version and
-the native menu bar app version/build.
+`codex-use restart`, `codex-use status`, and `codex-use version`. The version
+command prints both the plugin version and the native menu bar app version/build.
 
 ## Safety and accuracy
 
@@ -97,19 +94,23 @@ the native menu bar app version/build.
   `weekly` fallback. A valid later official `resetsAt` may extend that cooldown,
   but stale, expired, or missing reset data must never reduce it. Keep the
   15-minute cooldown only for failed requests.
-- Never open, print, copy, or parse Codex authentication files or tokens.
+- Never print, copy, cache, log, or expose Codex authentication files or tokens.
+  The native menu bar app has one narrow exception: it may read
+  `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`), take only
+  `tokens.id_token`, decode its JWT payload in memory, and retain only the
+  parsed subscription-expiration date. It must discard the token and payload
+  immediately and must not inspect unrelated claims.
 - Show the subscription-validity card above reset credits. Use an official
   subscription-expiration field only when app-server actually returns one.
   Never reinterpret `rateLimitResetCredits.credits[].expiresAt` as a plan or
   subscription expiry. When app-server returns no subscription expiration,
-  display `暂无数据`. Local fallback accepts only a day-of-month from
-  `CODEX_QUOTA_SUBSCRIPTION_EXPIRY_DAY` or the app preference
-  `subscriptionExpiryDay`. Resolve a configured day smaller than today's day
-  into the next month; otherwise use the current month. Skip forward over a
-  month that does not contain that day, use the local calendar, include the
-  whole expiration date as valid, and display only `yyyy-MM-dd`. Identify this
-  value as local configuration. Full timestamps may be read only for backward
-  compatibility and must not be documented as the preferred setting.
+  read only the namespaced JWT claim
+  `https://api.openai.com/auth.chatgpt_subscription_active_until` from
+  `tokens.id_token`. Never use the ordinary JWT `exp` claim because it is the
+  login-token expiration, not the subscription expiration. Display
+  `暂无数据` when the dedicated claim is missing or invalid. Do not provide or
+  document a manual subscription-date override. Use the local calendar for the
+  inclusive remaining-day count and display only `yyyy-MM-dd`.
 - Locate the Codex CLI from `CODEX_QUOTA_CODEX_PATH`, the process `PATH`,
   standalone install locations such as `~/.local/bin`, Homebrew locations, and
   both current and legacy CLI paths embedded in `Codex.app`. A stale legacy
