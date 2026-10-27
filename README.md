@@ -263,7 +263,7 @@ codex-use version
 
 ```text
 codex-quota-monitor v0.9.1
-CodexQuotaMenu v0.9.1 (build 21)
+CodexQuotaMenu v0.9.1 (build 22)
 ```
 
 ### 强制重建并重启
@@ -341,6 +341,8 @@ python3 "$HOME/Workspace/codex-quota-monitor/scripts/launch_menu_bar.py" --rebui
 3. 找不到该 claim、JWT 格式无效或尚未使用 ChatGPT 登录时显示“暂无数据”。
 
 插件明确忽略 JWT 的普通 `exp` 字段，因为它表示登录令牌到期时间，不是 Plus/Pro 订阅到期日；也不会把额度重置券的 `expiresAt` 当成订阅有效期。JWT、认证文件内容和其他 claims 不会输出、缓存或写入日志，组件只保留解析出的订阅到期时间用于当前界面显示。
+
+剩余天数按精确剩余时长除以 24 小时并向上取整，不会同时重复计算起始日和到期日；例如 10 月 27 日到 11 月 27 日显示 31 天，不足 24 小时显示 1 天。到期时刻已过时不会因为仍处于同一自然日而继续显示“1天”。如果 JWT 中的到期时刻已过，但实时官方额度接口仍明确返回 `plus` 或 `pro` 套餐，组件会把旧到期时刻按自然月向后滚动到未来，并在卡片提示中说明该日期来自续期推算。免费、未知套餐或官方额度接口不可用时不会推算续期。
 
 ### 今日 Tokens
 

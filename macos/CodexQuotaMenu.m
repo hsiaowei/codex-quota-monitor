@@ -732,6 +732,9 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
     NSArray<NSDictionary *> *buckets = @[codexBucket];
 
     NSString *plan = account[@"planType"];
+    NSString *liveQuotaPlan = [codexBucket[@"planType"] isKindOfClass:NSString.class]
+        ? codexBucket[@"planType"]
+        : nil;
     NSString *creditsBalance = nil;
     NSMutableArray<NSDictionary *> *windows = [NSMutableArray array];
     for (NSDictionary *bucket in buckets) {
@@ -787,6 +790,7 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         @"mainWindowDuration": chosen[@"duration"],
         @"fetchedAt": [NSDate date]
     } mutableCopy];
+    if (liveQuotaPlan) snapshot[@"subscriptionRenewalPlan"] = liveQuotaPlan;
     if (fiveHourWindow) {
         double fiveHourUsed = MAX(0, MIN(100, [fiveHourWindow[@"used"] doubleValue]));
         snapshot[@"fiveHourWindow"] = @{
@@ -1364,8 +1368,14 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
 
     NSNumber *subscriptionExpiresAt = snapshot[@"subscriptionExpiresAt"];
     if ([subscriptionExpiresAt isKindOfClass:NSNumber.class]) {
-        NSDate *expiration = [NSDate dateWithTimeIntervalSince1970:subscriptionExpiresAt.doubleValue];
-        NSInteger remainingDays = CQMSubscriptionRemainingDays(expiration, NSDate.date);
+        NSDate *now = NSDate.date;
+        NSDate *claimedExpiration = [NSDate dateWithTimeIntervalSince1970:subscriptionExpiresAt.doubleValue];
+        BOOL inferredRenewal = NO;
+        NSDate *expiration = CQMEffectiveSubscriptionExpiration(claimedExpiration,
+                                                                now,
+                                                                snapshot[@"subscriptionRenewalPlan"],
+                                                                &inferredRenewal);
+        NSInteger remainingDays = CQMSubscriptionRemainingDays(expiration, now);
         BOOL active = remainingDays > 0;
         _subscriptionLabel.stringValue = active
             ? [NSString stringWithFormat:@"订阅有效期 %ld天", (long)remainingDays]
@@ -1380,9 +1390,13 @@ static NSDictionary *QuotaWindowFromLimits(NSDictionary *limits, NSInteger targe
         _subscriptionCard.layer.borderColor = [accent colorWithAlphaComponent:0.45].CGColor;
         _subscriptionCard.layer.backgroundColor = [accent colorWithAlphaComponent:0.08].CGColor;
         BOOL jwt = [snapshot[@"subscriptionExpirationSource"] isEqual:@"jwt"];
-        _subscriptionCard.toolTip = jwt
-            ? @"订阅到期时间来自本机 Codex 登录 JWT 的订阅声明。"
-            : @"订阅到期时间来自官方账号数据。";
+        if (inferredRenewal) {
+            _subscriptionCard.toolTip = @"JWT 中的原订阅到期时间已过，但官方额度接口仍返回 Plus/Pro 套餐；当前日期按月续期推算。";
+        } else {
+            _subscriptionCard.toolTip = jwt
+                ? @"订阅到期时间来自本机 Codex 登录 JWT 的订阅声明。"
+                : @"订阅到期时间来自官方账号数据。";
+        }
     } else {
         _subscriptionLabel.stringValue = @"订阅有效期 暂无数据";
         _subscriptionLabel.textColor = QuotaGreen();

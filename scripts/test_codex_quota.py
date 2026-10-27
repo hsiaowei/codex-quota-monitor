@@ -108,7 +108,7 @@ class QuotaTests(unittest.TestCase):
             text=True,
         )
         self.assertIn("codex-quota-monitor v0.9.1", result.stdout)
-        self.assertIn("CodexQuotaMenu v0.9.1 (build 21)", result.stdout)
+        self.assertIn("CodexQuotaMenu v0.9.1 (build 22)", result.stdout)
 
     def test_codex_use_help_lists_version_command(self):
         result = subprocess.run(
@@ -132,11 +132,89 @@ class QuotaTests(unittest.TestCase):
         self.assertIn('@"subscriptionExpiresAt"', source)
         self.assertIn('@"auth.json"', source)
         self.assertIn('CQMSubscriptionExpirationFromAuthFile', source)
+        self.assertIn('@"subscriptionRenewalPlan"', source)
+        self.assertIn('codexBucket[@"planType"]', source)
         self.assertIn('@"source": @"jwt"', source)
         self.assertNotIn('CODEX_QUOTA_SUBSCRIPTION_EXPIRY_DAY', source)
         self.assertNotIn('subscriptionExpiryDay', source)
         self.assertIn('subscriptionFormatter.dateFormat = @"yyyy-MM-dd HH:mm";', source)
         self.assertNotIn('resetInfo[@"expiresAt"]', source)
+
+    def test_expired_subscription_is_renewed_only_for_live_plus_or_pro_plan(self):
+        source = r'''
+#import <Foundation/Foundation.h>
+#import "JWTSubscription.h"
+
+static NSDate *Date(NSString *value) {
+    NSISO8601DateFormatter *formatter = [[NSISO8601DateFormatter alloc] init];
+    return [formatter dateFromString:value];
+}
+
+static NSString *Format(NSDate *value) {
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    formatter.timeZone = [NSTimeZone timeZoneWithName:@"Asia/Shanghai"];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm";
+    return [formatter stringFromDate:value];
+}
+
+int main(void) {
+    @autoreleasepool {
+        setenv("TZ", "Asia/Shanghai", 1);
+        [NSTimeZone resetSystemTimeZone];
+        NSDate *claimed = Date(@"2026-10-27T01:17:32Z");
+        NSDate *after = Date(@"2026-10-27T01:18:00Z");
+        BOOL inferred = NO;
+        NSDate *plus = CQMEffectiveSubscriptionExpiration(claimed, after, @"plus", &inferred);
+        printf("%s|%s|%ld\n", Format(plus).UTF8String, inferred ? "yes" : "no",
+               (long)CQMSubscriptionRemainingDays(plus, after));
+
+        inferred = YES;
+        NSDate *freePlan = CQMEffectiveSubscriptionExpiration(claimed, after, @"free", &inferred);
+        printf("%s|%s|%ld\n", Format(freePlan).UTF8String, inferred ? "yes" : "no",
+               (long)CQMSubscriptionRemainingDays(freePlan, after));
+
+        NSDate *before = Date(@"2026-10-27T01:16:00Z");
+        inferred = YES;
+        NSDate *future = CQMEffectiveSubscriptionExpiration(claimed, before, @"pro", &inferred);
+        printf("%s|%s|%ld\n", Format(future).UTF8String, inferred ? "yes" : "no",
+               (long)CQMSubscriptionRemainingDays(future, before));
+    }
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "subscription-renewal-test"
+            compile_result = subprocess.run(
+                [
+                    "xcrun",
+                    "clang",
+                    "-fobjc-arc",
+                    "-framework",
+                    "Foundation",
+                    "-I",
+                    str(JWT_SUBSCRIPTION_HEADER_PATH.parent),
+                    "-x",
+                    "objective-c",
+                    "-",
+                    "-o",
+                    str(binary),
+                ],
+                input=source,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "2026-11-27 09:17|yes|31",
+                "2026-10-27 09:17|no|0",
+                "2026-10-27 09:17|no|1",
+            ],
+        )
 
     def test_subscription_expiration_reads_only_dedicated_jwt_claim(self):
         source = r'''

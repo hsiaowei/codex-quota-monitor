@@ -2,6 +2,7 @@
 #define CODEX_QUOTA_JWT_SUBSCRIPTION_H
 
 #import <Foundation/Foundation.h>
+#import <math.h>
 
 static inline NSData *CQMDecodeJWTPart(NSString *part) {
     if (![part isKindOfClass:NSString.class] || part.length == 0) return nil;
@@ -63,19 +64,49 @@ static inline NSDate *CQMSubscriptionExpirationFromAuthFile(NSString *path) {
     return CQMSubscriptionExpirationFromIDToken(idToken);
 }
 
-// Count local calendar days inclusively. An expiry today remains valid for the
-// entire displayed date and therefore shows one remaining day.
-static inline NSInteger CQMSubscriptionRemainingDays(NSDate *expiration, NSDate *now) {
-    if (!expiration || !now) return 0;
+static inline BOOL CQMSubscriptionPlanRenewsMonthly(NSString *plan) {
+    if (![plan isKindOfClass:NSString.class]) return NO;
+    NSString *normalized = [[plan stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
+    return [normalized isEqualToString:@"plus"] || [normalized isEqualToString:@"pro"];
+}
+
+// A stale JWT can retain the previous billing timestamp after an automatic
+// monthly renewal. Only infer the next billing date when the live official
+// quota response still identifies the account as Plus or Pro.
+static inline NSDate *CQMEffectiveSubscriptionExpiration(NSDate *expiration,
+                                                         NSDate *now,
+                                                         NSString *plan,
+                                                         BOOL *inferredRenewal) {
+    if (inferredRenewal) *inferredRenewal = NO;
+    if (!expiration || !now || [expiration compare:now] == NSOrderedDescending) return expiration;
+    if (!CQMSubscriptionPlanRenewsMonthly(plan)) return expiration;
+
     NSCalendar *calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
     calendar.timeZone = NSTimeZone.localTimeZone;
-    NSDate *todayStart = [calendar startOfDayForDate:now];
-    NSDate *expirationStart = [calendar startOfDayForDate:expiration];
-    NSInteger difference = [[calendar components:NSCalendarUnitDay
-                                         fromDate:todayStart
-                                           toDate:expirationStart
-                                          options:0] day];
-    return difference < 0 ? 0 : difference + 1;
+    NSDate *adjusted = expiration;
+    for (NSInteger month = 0; month < 120 && [adjusted compare:now] != NSOrderedDescending; month++) {
+        NSDate *next = [calendar dateByAddingUnit:NSCalendarUnitMonth
+                                            value:1
+                                           toDate:adjusted
+                                          options:0];
+        if (!next || [next compare:adjusted] != NSOrderedDescending) break;
+        adjusted = next;
+    }
+    if ([adjusted compare:now] == NSOrderedDescending && ![adjusted isEqualToDate:expiration]) {
+        if (inferredRenewal) *inferredRenewal = YES;
+        return adjusted;
+    }
+    return expiration;
+}
+
+// Display partial remaining days as one day without double-counting both the
+// current date and the expiry date. For example, Oct 27 to Nov 27 is 31 days.
+static inline NSInteger CQMSubscriptionRemainingDays(NSDate *expiration, NSDate *now) {
+    if (!expiration || !now) return 0;
+    NSTimeInterval remaining = [expiration timeIntervalSinceDate:now];
+    if (remaining <= 0) return 0;
+    return MAX(1, (NSInteger)ceil(remaining / (24.0 * 60.0 * 60.0)));
 }
 
 #endif

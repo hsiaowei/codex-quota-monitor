@@ -116,9 +116,16 @@ command prints both the plugin version and the native menu bar app version/build
   `tokens.id_token`. Never use the ordinary JWT `exp` claim because it is the
   login-token expiration, not the subscription expiration. Display
   `暂无数据` when the dedicated claim is missing or invalid. Do not provide or
-  document a manual subscription-date override. Use the local calendar for the
-  inclusive remaining-day count and display the local expiration time through
-  the minute as `yyyy-MM-dd HH:mm`.
+  document a manual subscription-date override. Display the local expiration
+  time through the minute as `yyyy-MM-dd HH:mm`. Calculate remaining days from
+  the exact positive duration divided by 24 hours and rounded up, so Oct 27 to
+  Nov 27 is 31 days and a partial final day is 1 day. Compare the exact
+  expiration timestamp first, so a timestamp that has already passed never
+  remains active merely because it is still the same local date. If the JWT
+  timestamp is stale but the live official Codex quota bucket still reports the
+  plan as `plus` or `pro`, advance the timestamp by calendar months until it is
+  in the future and explain in the card tooltip that the renewed date is
+  inferred. Never infer renewal for a free, unknown, or unavailable live plan.
 - Locate the Codex CLI from `CODEX_QUOTA_CODEX_PATH`, the process `PATH`,
   standalone install locations such as `~/.local/bin`, Homebrew locations, and
   both current and legacy CLI paths embedded in `Codex.app`. A stale legacy

@@ -15,9 +15,9 @@ GitHub：<https://github.com/hsiaowei/codex-quota-monitor>
 - `v0.9.1` 在 `v0.9.0` CLI 路径兼容修复基础上增加订阅有效期卡片和菜单栏双额度显示；订阅日期已改为自动从登录 JWT 的专用 claim 读取，不再手动设置。
 - 本次发布流程会把 `v0.9.1` 提交并推送到 GitHub 的 `origin/main`。
 - 本机 Codex 插件缓存已经重新安装为 `0.9.1+codex.20260928074211`。
-- 原生菜单栏程序当前构建号为 `CodexQuotaMenu v0.9.1 (build 21)`。
+- 原生菜单栏程序当前构建号为 `CodexQuotaMenu v0.9.1 (build 22)`。
 - 当前受限执行环境无法连接 macOS LaunchServices，自动打开应用返回 `kLSServerCommunicationErr`；源码与应用已构建完成，回到普通终端运行 `codex-use restart` 即可启动。
-- 51 项 Python 单元测试全部通过，插件清单校验和 Skill 校验均通过，`git diff --check` 通过。
+- 52 项 Python 单元测试全部通过，插件清单校验和 Skill 校验均通过，`git diff --check` 通过。
 - 当前受限执行环境无法连接 macOS LaunchServices，因此无法在本会话内真正打开菜单栏应用。用户需要在普通 macOS 终端执行 `codex-use restart`。
 
 ## 3. 项目目标与最终产品形态
@@ -105,7 +105,8 @@ GitHub：<https://github.com/hsiaowei/codex-quota-monitor>
 - `rateLimitResetCredits.credits[].expiresAt` 只属于额度重置券，严禁把它显示成订阅到期日。
 - 官方字段优先；缺少官方字段时，读取 `~/.codex/auth.json` 的 `tokens.id_token`，只解析 `https://api.openai.com/auth.chatgpt_subscription_active_until`。
 - 明确忽略 JWT 的普通 `exp` 字段；它是登录令牌到期时间，不是订阅到期日。JWT 与其他 claims 不输出、不缓存、不记录日志。
-- 已移除手动日期、环境变量和应用偏好设置入口；到期日当天仍计为有效，界面以本地时区显示到分钟 `yyyy-MM-dd HH:mm`。
+- 已移除手动日期、环境变量和应用偏好设置入口；剩余天数按精确剩余时长除以 24 小时并向上取整（10 月 27 日到 11 月 27 日显示 31 天），界面以本地时区显示到分钟 `yyyy-MM-dd HH:mm`。
+- 剩余天数先比较精确到秒的到期时刻；同一自然日内一旦超过到期时刻，不再错误显示 1 天。JWT 到期时刻已过但实时官方套餐仍为 `plus`/`pro` 时，按自然月向后推算续期日期，并在卡片提示中标明推算来源。
 
 ## 5. 最小 Token 请求规则
 
@@ -276,7 +277,7 @@ Skill is valid!
 
 ```text
 codex-quota-monitor v0.9.1
-CodexQuotaMenu v0.9.1 (build 21)
+CodexQuotaMenu v0.9.1 (build 22)
 ```
 
 插件安装或更新后，需要新建 Codex 会话才能加载新 Skill；旧会话不会中途重新载入插件。
